@@ -31,6 +31,26 @@ API on another port: `API_URL=http://127.0.0.1:9000 npm run dev`.
 (cd web && npm run build) # type-check + bundle
 ```
 
+## CI/CD (GitHub Actions)
+
+[.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) runs on every push and pull request: engine + API tests on
+Python 3.11 and 3.12, and the web type-check + build. On a push to `main` that passed, the `deploy` job copies
+the built frontend to the VPS over SSH and runs [deploy/deploy.sh](deploy/deploy.sh) there (checkout of the pushed
+commit, `pip install`, config files into systemd/nginx, restart, health check). The VPS needs no Node.
+
+One-time VPS setup for the deploy user (replace `deploy` with the name you use):
+
+```bash
+sudo adduser --disabled-password --gecos "" deploy
+sudo chown -R deploy:deploy /opt/backtest-platform          # git checkout, .venv and web/dist live here
+sudo -u deploy mkdir -p /home/deploy/.ssh && sudo -u deploy tee -a /home/deploy/.ssh/authorized_keys < deploy_key.pub
+sudo visudo -cf deploy/sudoers-backtest-deploy && sudo install -m 440 deploy/sudoers-backtest-deploy /etc/sudoers.d/backtest-deploy
+```
+
+Repository secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (private key matching `deploy_key.pub`), optionally
+`VPS_PORT` and `VPS_KNOWN_HOSTS` (`ssh-keyscan -p 22 your-host`, pins the server's host key). Create a
+`production` environment in the repository settings if you want manual approval before each deploy.
+
 ## Authentication
 
 Every `/api/*` endpoint except `POST /api/auth/login` needs a logged-in session. Implementation: [api/auth.py](api/auth.py).

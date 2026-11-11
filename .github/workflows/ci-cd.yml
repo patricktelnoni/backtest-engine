@@ -1,0 +1,112 @@
+# CI on every push and pull request; CD to the VPS only when CI passed on a push to main.
+# The frontend is built here and rsync'ed to the server, so the VPS needs neither Node nor build CPU.
+#
+# Repository secrets used by the deploy job (Settings -> Secrets and variables -> Actions):
+#   VPS_HOST         e.g. backtest-engine.cloud or the IP
+#   VPS_USER         the deploy user (owns /opt/backtest-platform; see deploy/sudoers-backtest-deploy)
+#   VPS_SSH_KEY      private key (ed25519) whose public half is in that user's ~/.ssh/authorized_keys
+#   VPS_PORT         optional, default 22
+#   VPS_KNOWN_HOSTS  optional but recommended: output of `ssh-keyscan -p PORT HOST` (pins the host key)
+name: CI/CD
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  APP_DIR: /opt/backtest-platform
+
+jobs:
+  python:
+    name: engine + api tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            api/requirements.txt
+            api/requirements-dev.txt
+            engine/pyproject.toml
+      - name: Install
+        run: pip install -e "engine[dev]" -r api/requirements-dev.txt
+      - name: Engine tests
+        run: pytest -q
+        working-directory: engine
+      - name: API tests
+        run: pytest -q
+        working-directory: api
+
+  web:
+    name: web type-check + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    name: deploy to VPS
+    needs: [python, web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://backtest-engine.cloud
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: dist
+      - name: SSH setup
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          if [ -n "$KNOWN_HOSTS" ]; then printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else echo "::warning::VPS_KNOWN_HOSTS not set; trusting the host key seen now"; ssh-keyscan -p "$PORT" "$HOST" > ~/.ssh/known_hosts 2>/dev/null; fi
+          cat > ~/.ssh/config <<CFG
+          Host vps
+            HostName $HOST
+            Port $PORT
+            User ${{ secrets.VPS_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          CFG
+      - name: Upload frontend build
+        run: |
+          ssh vps "mkdir -p $APP_DIR/web/dist.new"
+          rsync -az --delete dist/ vps:$APP_DIR/web/dist.new/
+      - name: Update code and restart services
+        run: |
+          ssh vps "set -e; cd $APP_DIR && git fetch --quiet origin && git checkout --quiet --force ${{ github.sha }} && bash deploy/deploy.sh"
