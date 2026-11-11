@@ -4,7 +4,9 @@
 # Repository secrets used by the deploy job (Settings -> Secrets and variables -> Actions):
 #   VPS_HOST         e.g. backtest-engine.cloud or the IP
 #   VPS_USER         the deploy user (owns /opt/backtest-platform; see deploy/sudoers-backtest-deploy)
-#   VPS_SSH_KEY      private key (ed25519) whose public half is in that user's ~/.ssh/authorized_keys
+#   VPS_SSH_KEY      private key (ed25519) whose public half is in that user's ~/.ssh/authorized_keys; either the
+#                    key file verbatim, or (more robust against copy/paste damage) its base64:
+#                    `base64 -i ~/.ssh/backtest_deploy | tr -d '\n' | pbcopy`
 #   VPS_PORT         optional, default 22
 #   VPS_KNOWN_HOSTS  optional but recommended: output of `ssh-keyscan -p PORT HOST` (pins the host key)
 name: CI/CD
@@ -91,7 +93,12 @@ jobs:
           PORT: ${{ secrets.VPS_PORT || '22' }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          if printf '%s' "$SSH_KEY" | grep -q "BEGIN"; then printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          else printf '%s' "$SSH_KEY" | tr -d ' \n\r' | base64 -d > ~/.ssh/deploy_key; fi
+          chmod 600 ~/.ssh/deploy_key
+          # Fails here, with a clear message, if the secret is not a usable private key (prints only the fingerprint).
+          ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null || { echo "::error::VPS_SSH_KEY is not a valid OpenSSH private key (lines=$(wc -l < ~/.ssh/deploy_key), bytes=$(wc -c < ~/.ssh/deploy_key))"; exit 1; }
+          echo "deploy key fingerprint: $(ssh-keygen -lf ~/.ssh/deploy_key)"
           if [ -n "$KNOWN_HOSTS" ]; then printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           else echo "::warning::VPS_KNOWN_HOSTS not set; trusting the host key seen now"; ssh-keyscan -p "$PORT" "$HOST" > ~/.ssh/known_hosts 2>/dev/null; fi
           cat > ~/.ssh/config <<CFG
