@@ -23,22 +23,14 @@ class BacktestResult:
 
 def _trade_spans(position: pd.Series) -> list[tuple[int, int]]:
     """[start, end) bar ranges of one trade = a contiguous run of the same non-zero position."""
-    spans, start = [], None
     pos = position.to_numpy()
-    for i in range(len(pos)):
-        if start is not None and pos[i] != pos[start]:
-            spans.append((start, i))
-            start = None
-        if start is None and pos[i] != 0:
-            start = i
-    if start is not None:
-        spans.append((start, len(pos)))
-    return spans
-
-
-def _trade_returns(position: pd.Series, net: pd.Series) -> list[float]:
-    vals = net.to_numpy()
-    return [float(np.prod(1 + vals[s:e]) - 1) for s, e in _trade_spans(position)]
+    n = len(pos)
+    if n == 0:
+        return []
+    change = np.flatnonzero(pos[1:] != pos[:-1]) + 1  # first bar of every new run
+    starts = np.concatenate(([0], change)).tolist()
+    ends = np.concatenate((change, [n])).tolist()
+    return [(s, e) for s, e in zip(starts, ends) if pos[s] != 0]
 
 
 def build_trades(position: pd.Series, net: pd.Series, close: pd.Series) -> list[dict]:
@@ -97,6 +89,7 @@ def run_backtest(
     net = gross - trading_cost - borrow - swap
 
     equity = initial_cash * (1 + net).cumprod()
-    trades = _trade_returns(position, net)
-    metrics = compute_metrics(net, equity, position, trades, ppy)
-    return BacktestResult(metrics, equity, position, net, trades, build_trades(position, net, df["close"]))
+    trades = build_trades(position, net, df["close"])
+    trade_returns = [t["return"] for t in trades]
+    metrics = compute_metrics(net, equity, position, trade_returns, ppy)
+    return BacktestResult(metrics, equity, position, net, trade_returns, trades)

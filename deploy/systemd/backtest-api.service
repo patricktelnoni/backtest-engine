@@ -19,12 +19,24 @@ Environment=BT_COOKIE_SECURE=1
 Environment=BT_SESSION_IDLE_MINUTES=60
 Environment=BT_SESSION_MAX_HOURS=12
 
+# Compute pool inside the one process: CSV parsing, backtests and JSON encoding run on BT_BACKTEST_THREADS
+# threads (the GIL makes more threads cost memory, not throughput); up to BT_BACKTEST_QUEUE more requests
+# wait, the rest get 503 + Retry-After instead of piling up DataFrames in RAM.
+Environment=BT_BACKTEST_THREADS=2
+Environment=BT_BACKTEST_QUEUE=8
+# glibc otherwise grows one 64 MB malloc arena per thread; two are plenty and keep RSS flat over time.
+Environment=MALLOC_ARENA_MAX=2
+
 # Bind to localhost only: nginx is the sole public entry point.
+# One worker: the event loop stays free (heavy work is on the pool above) and each extra worker costs another
+# ~90 MB of pandas/numpy for no gain on a 1-2 vCPU VPS. Raise --workers only if CPU sits idle under load.
 ExecStart=/opt/backtest-platform/.venv/bin/uvicorn main:app \
-    --host 127.0.0.1 --port 8001 --workers 2 \
+    --host 127.0.0.1 --port 8001 --workers 1 \
     --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
 Restart=on-failure
 RestartSec=3
+# Backtests are short CPU bursts on a VPS shared with other sites: let those keep scheduling priority.
+Nice=5
 
 # Hardening
 NoNewPrivileges=true

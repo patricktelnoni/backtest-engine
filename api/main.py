@@ -1,27 +1,67 @@
-"""Thin HTTP layer over btengine. Run: uvicorn main:app --reload --port 8001 (from ./api)"""
+"""Thin HTTP layer over btengine. Run: uvicorn main:app --reload --port 8001 (from ./api)
+
+Resource model: one uvicorn process is enough. CPU-bound work (CSV parsing, the backtests, JSON encoding)
+runs on a small in-process thread pool so the event loop keeps answering auth checks and static requests;
+when the pool and its queue are full, extra requests get 503 + Retry-After instead of piling up in memory.
+"""
 from __future__ import annotations
 
-import io
+import asyncio
+import functools
 import json
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 import auth
-from btengine import REGISTRY, Market, get_spec, run_backtest
+from btengine import REGISTRY, CostModel, Market, get_spec, run_backtest
 from btengine.cli import _demo_data
+from btengine.data import read_ohlcv_csv, validate_ohlcv
+
+try:  # orjson is several times faster and allocates far less than the stdlib encoder; fall back if absent.
+    import orjson
+
+    def _dumps(obj) -> bytes:
+        return orjson.dumps(obj)
+except ImportError:  # pragma: no cover
+    def _dumps(obj) -> bytes:
+        return json.dumps(obj, separators=(",", ":")).encode()
+
+
+# ---------- compute pool ----------
+# The GIL means more threads would not add throughput, only memory held by in-flight DataFrames; 2 threads let
+# one request's numpy work overlap another's Python loops. BT_BACKTEST_QUEUE bounds how many more may wait.
+BACKTEST_THREADS = max(1, int(os.environ.get("BT_BACKTEST_THREADS", "2")))
+BACKTEST_QUEUE = max(0, int(os.environ.get("BT_BACKTEST_QUEUE", "8")))
+_pool = ThreadPoolExecutor(max_workers=BACKTEST_THREADS, thread_name_prefix="backtest")
+_in_flight = 0
+
+
+async def _compute(fn, *args):
+    """Run blocking `fn` on the compute pool, or answer 503 when too much work is already pending."""
+    global _in_flight
+    if _in_flight >= BACKTEST_THREADS + BACKTEST_QUEUE:
+        raise HTTPException(503, "server busy, try again in a moment", headers={"Retry-After": "2"})
+    _in_flight += 1
+    try:
+        return await asyncio.get_running_loop().run_in_executor(_pool, fn, *args)
+    finally:
+        _in_flight -= 1
 
 
 @asynccontextmanager
 async def _lifespan(_app):
     auth._dummy_hash()  # compute once up front so the first unknown-user login is not measurably slower
     yield
+    _pool.shutdown(wait=False, cancel_futures=True)
 
 
 # Interactive docs/OpenAPI schema are off unless explicitly enabled (BT_ENABLE_DOCS=1, e.g. for local dev).
@@ -37,7 +77,7 @@ PUBLIC_PATHS = {"/api/auth/login"}
 async def _api_guard(request: Request, call_next):
     """Reject unauthenticated /api/ calls *before* FastAPI reads the body (uploads can be 20 MB), and mark
     every API response no-store: results and CSRF tokens must not end up in a browser or proxy cache.
-    The per-route dependency below is the authoritative check; this is the early, cheap one."""
+    The per-route dependency below is the authoritative check; it reuses the session verified here."""
     path = request.url.path
     if path.startswith("/api/") and path not in PUBLIC_PATHS:
         try:
@@ -57,6 +97,14 @@ api = APIRouter(dependencies=[Depends(auth.current_session)])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_COMPARE_RUNS = 6
+
+# Series values are for charting; a few decimals keep the payload (and the gzip work nginx does on it) small.
+EQUITY_DECIMALS, RATIO_DECIMALS = 4, 6
+
+
+def _json(body: bytes) -> Response:
+    """Pre-encoded JSON. Returning a Response skips FastAPI's jsonable_encoder, which walks every value."""
+    return Response(body, media_type="application/json")
 
 
 def _clean(v):
@@ -106,32 +154,42 @@ class Common:
         }
 
 
-async def _prepare(c: Common):
-    """Validate shared inputs and return (df, costs-or-None)."""
+def _check_common(c: Common) -> None:
+    """Cheap input checks, done before a request takes a compute slot."""
     if c.market not in {m.value for m in Market}:
         raise HTTPException(422, f"unknown market {c.market!r}")
     if not c.initial_cash > 0:
         raise HTTPException(422, "initial_cash must be > 0")
+    if c.file is not None:
+        size = c.file.size
+        if size is None:  # older multipart parsers: measure the spooled file instead
+            f = c.file.file
+            f.seek(0, os.SEEK_END)
+            size, _ = f.tell(), f.seek(0)
+        if size > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "file too large (max 20 MB)")
+
+
+@functools.cache
+def _demo() -> pd.DataFrame:
+    """The synthetic series is deterministic: build and validate it once per process."""
+    return validate_ohlcv(_demo_data())
+
+
+def _load(c: Common) -> tuple[pd.DataFrame, CostModel | None]:
+    """Blocking: parse, filter and validate the data and resolve costs. Runs on the compute pool."""
     try:
-        if c.file is None:
-            df = _demo_data()
-        else:
-            raw = await c.file.read(MAX_UPLOAD_BYTES + 1)
-            if len(raw) > MAX_UPLOAD_BYTES:
-                raise HTTPException(413, "file too large (max 20 MB)")
-            df = pd.read_csv(io.BytesIO(raw))
-            df.columns = [col.strip().lower() for col in df.columns]
-            df[df.columns[0]] = pd.to_datetime(df[df.columns[0]], utc=True)
-            df = df.set_index(df.columns[0])
+        # Parsing straight from the spooled upload (on disk above 1 MB) avoids holding a second copy in RAM.
+        df = _demo() if c.file is None else read_ohlcv_csv(c.file.file)
         if c.start or c.end:
             lo = pd.Timestamp(c.start, tz="UTC") if c.start else df.index.min()
             hi = pd.Timestamp(c.end, tz="UTC") if c.end else df.index.max()
             df = df[(df.index >= lo) & (df.index <= hi)]
             if df.empty:
                 raise ValueError("no data left after date filter")
+        # Validate once here; every run_backtest below then recognises the canonical frame and skips the copy.
+        df = validate_ohlcv(df)
         costs = get_spec(c.market).default_costs.model_copy(update=c.cost_overrides) if c.cost_overrides else None
-    except HTTPException:
-        raise
     except (ValueError, KeyError, ValidationError) as e:
         raise _422(e)
     return df, costs
@@ -161,21 +219,32 @@ def _date(ts) -> str:
     return ts.strftime("%Y-%m-%d")
 
 
+def _dates(index: pd.DatetimeIndex) -> list[str]:
+    return index.strftime("%Y-%m-%d").tolist()
+
+
+def _values(s: pd.Series, decimals: int) -> list[float]:
+    """Rounded plain floats in one vectorized step (per-element Series access is ~100x slower)."""
+    return np.round(s.to_numpy(dtype=float), decimals).tolist()
+
+
+# The catalog never changes while the process runs: encode it once.
+_STRATEGIES = _dumps([{"name": n, "params_schema": c.schema()} for n, c in sorted(REGISTRY.items())])
+_MARKETS = _dumps([{"name": m.value, **get_spec(m).model_dump(exclude={"market"}, mode="json")} for m in Market])
+
+
 @api.get("/api/strategies")
-def strategies():
-    return [{"name": n, "params_schema": c.schema()} for n, c in sorted(REGISTRY.items())]
+async def strategies():
+    return _json(_STRATEGIES)
 
 
 @api.get("/api/markets")
-def markets():
-    return [{"name": m.value, **get_spec(m).model_dump(exclude={"market"}, mode="json")} for m in Market]
+async def markets():
+    return _json(_MARKETS)
 
 
-@api.post("/api/backtest")
-async def backtest(common: Common = Depends(), strategy: str = Form(...), params: str = Form("{}")):
-    _check_strategy(strategy)
-    strategy_params = _parse_params(params)
-    df, costs = await _prepare(common)
+def _run_single(common: Common, strategy: str, strategy_params: dict) -> bytes:
+    df, costs = _load(common)
     try:
         r = run_backtest(df, strategy, common.market, initial_cash=common.initial_cash, costs=costs,
                          strategy_params=strategy_params)
@@ -183,20 +252,62 @@ async def backtest(common: Common = Depends(), strategy: str = Form(...), params
     except (ValueError, KeyError, ValidationError) as e:
         raise _422(e)
 
-    dd = _drawdown(r.equity, common.initial_cash)
-    series = [
-        {"t": _date(t), "equity": float(e), "benchmark": float(b), "drawdown": float(d), "position": float(p)}
-        for t, e, b, d, p in zip(r.equity.index, r.equity, bh.equity, dd, r.position)
-    ]
+    columns = (
+        _dates(r.equity.index),
+        _values(r.equity, EQUITY_DECIMALS),
+        _values(bh.equity, EQUITY_DECIMALS),
+        _values(_drawdown(r.equity, common.initial_cash), RATIO_DECIMALS),
+        _values(r.position, RATIO_DECIMALS),
+    )
+    series = [{"t": t, "equity": e, "benchmark": b, "drawdown": d, "position": p} for t, e, b, d, p in zip(*columns)]
     trades = [{**t, "entry_date": _date(t["entry_date"]), "exit_date": _date(t["exit_date"])} for t in r.trades]
-    return {
+    return _dumps({
         "metrics": _metrics(r.metrics),
         "benchmark_metrics": _metrics(bh.metrics),
         "series": series,
         "trade_returns": r.trade_returns,
         "trades": trades,
         "bars": len(df),
-    }
+    })
+
+
+@api.post("/api/backtest")
+async def backtest(common: Common = Depends(), strategy: str = Form(...), params: str = Form("{}")):
+    _check_strategy(strategy)
+    strategy_params = _parse_params(params)
+    _check_common(common)
+    return _json(await _compute(_run_single, common, strategy, strategy_params))
+
+
+def _run_compare(common: Common, specs: list[dict]) -> bytes:
+    df, costs = _load(common)
+    results = []
+    for i, s in enumerate(specs, 1):
+        try:
+            results.append(run_backtest(df, s["strategy"], common.market, initial_cash=common.initial_cash,
+                                        costs=costs, strategy_params=s["params"]))
+        except (ValueError, KeyError, ValidationError) as e:
+            raise _422(e, prefix=f"run {i} ({s['strategy']}): ")
+    try:
+        bh = run_backtest(df, "buy_hold", common.market, initial_cash=common.initial_cash, costs=costs)
+    except (ValueError, KeyError, ValidationError) as e:
+        raise _422(e)
+
+    columns = {"t": _dates(bh.equity.index), "benchmark": _values(bh.equity, EQUITY_DECIMALS)}
+    for i, r in enumerate(results):
+        columns[f"e{i}"] = _values(r.equity, EQUITY_DECIMALS)
+        columns[f"d{i}"] = _values(_drawdown(r.equity, common.initial_cash), RATIO_DECIMALS)
+    keys = list(columns)
+    series = [dict(zip(keys, row)) for row in zip(*columns.values())]
+    return _dumps({
+        "runs": [
+            {"strategy": s["strategy"], "params": s["params"], "metrics": _metrics(r.metrics)}
+            for s, r in zip(specs, results)
+        ],
+        "benchmark_metrics": _metrics(bh.metrics),
+        "series": series,
+        "bars": len(df),
+    })
 
 
 @api.post("/api/compare")
@@ -213,37 +324,8 @@ async def compare(common: Common = Depends(), runs: str = Form(...)):
             raise HTTPException(422, f"run {i}: must be an object")
         _check_strategy(s.get("strategy"))
         s["params"] = _parse_params(s.get("params", {}), f"run {i}: params")
-
-    df, costs = await _prepare(common)
-    results = []
-    for i, s in enumerate(specs, 1):
-        try:
-            results.append(run_backtest(df, s["strategy"], common.market, initial_cash=common.initial_cash,
-                                        costs=costs, strategy_params=s["params"]))
-        except (ValueError, KeyError, ValidationError) as e:
-            raise _422(e, prefix=f"run {i} ({s['strategy']}): ")
-    try:
-        bh = run_backtest(df, "buy_hold", common.market, initial_cash=common.initial_cash, costs=costs)
-    except (ValueError, KeyError, ValidationError) as e:
-        raise _422(e)
-
-    dds = [_drawdown(r.equity, common.initial_cash) for r in results]
-    series = []
-    for j, t in enumerate(bh.equity.index):
-        row = {"t": _date(t), "benchmark": float(bh.equity.iloc[j])}
-        for i, (r, d) in enumerate(zip(results, dds)):
-            row[f"e{i}"] = float(r.equity.iloc[j])
-            row[f"d{i}"] = float(d.iloc[j])
-        series.append(row)
-    return {
-        "runs": [
-            {"strategy": s["strategy"], "params": s["params"], "metrics": _metrics(r.metrics)}
-            for s, r in zip(specs, results)
-        ],
-        "benchmark_metrics": _metrics(bh.metrics),
-        "series": series,
-        "bars": len(df),
-    }
+    _check_common(common)
+    return _json(await _compute(_run_compare, common, specs))
 
 
 app.include_router(auth.router)

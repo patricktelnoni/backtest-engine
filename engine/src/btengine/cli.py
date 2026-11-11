@@ -11,6 +11,7 @@ import pandas as pd
 from pydantic import ValidationError
 
 from .backtest import run_backtest
+from .data import read_ohlcv_csv
 from .markets import Market, get_spec
 from .strategies import REGISTRY
 
@@ -26,13 +27,7 @@ def _parse_param(item: str) -> tuple[str, object]:
 
 
 def _load_csv(path: str, date_col: str | None) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
-    col = (date_col or df.columns[0]).lower()
-    if col not in df.columns:
-        raise ValueError(f"date column {col!r} not found; columns: {list(df.columns)}")
-    df[col] = pd.to_datetime(df[col], utc=True)
-    return df.set_index(col)
+    return read_ohlcv_csv(path, date_col)
 
 
 def _demo_data(n: int = 750, seed: int = 0) -> pd.DataFrame:

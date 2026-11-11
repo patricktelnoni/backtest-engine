@@ -15,6 +15,7 @@ cd api && BT_COOKIE_SECURE=0 python manage.py add admin --generate && cd ..
 
 # terminal 1  (BT_COOKIE_SECURE=0 only because local dev is plain http)
 cd api && BT_COOKIE_SECURE=0 uvicorn main:app --reload --port 8001
+# production: deploy/systemd/backtest-api.service (one uvicorn process; see "Resource usage" below)
 
 # terminal 2
 cd web && npm install && npm run dev      # http://localhost:5173
@@ -51,6 +52,30 @@ Every `/api/*` endpoint except `POST /api/auth/login` needs a logged-in session.
 | `BT_AUTH_DB` | `api/auth.db` | SQLite file with users and sessions (created with mode 600) |
 | `BT_COOKIE_SECURE` | `1` | `0` only for local plain-http dev |
 | `BT_SESSION_IDLE_MINUTES` / `BT_SESSION_MAX_HOURS` | `60` / `12` | session lifetimes |
+
+## Resource usage
+
+The API is sized for a small shared VPS:
+
+- **One uvicorn process** (`--workers 1`, ~90 MB RSS). CSV parsing, the backtests and JSON encoding run on an
+  in-process thread pool, so the event loop keeps answering logins and catalog requests while a backtest runs.
+  Each extra worker costs another ~90 MB of pandas/numpy; add one only if CPU is idle under load.
+- **Bounded work in flight**: `BT_BACKTEST_THREADS` (default 2) threads compute, up to `BT_BACKTEST_QUEUE`
+  (default 8) more requests wait, and anything beyond that is answered `503` with `Retry-After: 2` instead of
+  queueing DataFrames in memory. nginx additionally rate-limits `/api/` per client IP.
+- **Cheap responses**: results are encoded once with `orjson` (stdlib `json` if it is missing) straight from
+  numpy arrays, chart series are rounded (equity 4 decimals, ratios 6), the strategy/market catalog is encoded
+  at startup, and uploads are parsed from the spooled file reading only the date + OHLCV columns.
+- **One session lookup per request** (the middleware's check is reused by the route) on a SQLite database in
+  WAL mode with `synchronous=NORMAL`.
+- **Static assets are pre-compressed** by `npm run build` (`scripts/precompress.mjs`) and served by nginx with
+  `gzip_static on`, so nothing is re-gzipped per visitor. Fingerprinted assets are cached for a year.
+
+| Env var | Default | |
+| --- | --- | --- |
+| `BT_BACKTEST_THREADS` | `2` | threads running CSV parsing + backtests + encoding |
+| `BT_BACKTEST_QUEUE` | `8` | requests allowed to wait for a thread before `503` |
+| `MALLOC_ARENA_MAX` (systemd unit) | `2` | caps glibc per-thread malloc arenas so RSS stays flat |
 
 ## UI
 

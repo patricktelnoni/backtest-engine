@@ -188,7 +188,11 @@ def db():
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        # WAL + NORMAL: a commit no longer fsyncs the main file on every session touch; still safe against
+        # process crashes (only an OS crash can lose the last few commits, i.e. a recent last_seen bump).
+        conn.execute("PRAGMA synchronous = NORMAL")
         if path not in _initialized:
+            conn.execute("PRAGMA journal_mode = WAL")  # persistent, stored in the database file
             conn.executescript(_SCHEMA)
             _initialized.add(path)
         with conn:
@@ -277,8 +281,15 @@ def _unauthorized(detail: str = "not authenticated") -> HTTPException:
     return HTTPException(401, detail)
 
 
+_SCOPE_KEY = "bt.session"  # per-request cache in the ASGI scope, shared by the middleware and route dependencies
+
+
 def current_session(request: Request) -> Session:
-    """FastAPI dependency: a valid, unexpired session; for unsafe methods also a matching CSRF token."""
+    """FastAPI dependency: a valid, unexpired session; for unsafe methods also a matching CSRF token.
+    The API guard middleware runs this first; later calls for the same request reuse its result."""
+    cached = request.scope.get(_SCOPE_KEY)
+    if cached is not None:
+        return cached
     token = request.cookies.get(cookie_name())
     if not token or len(token) > 128:
         raise _unauthorized()
@@ -300,7 +311,9 @@ def current_session(request: Request) -> Session:
         sent = request.headers.get(CSRF_HEADER, "")
         if not hmac.compare_digest(sent.encode(), row["csrf"].encode()):
             raise HTTPException(403, "missing or invalid CSRF token")
-    return Session(user_id=row["id"], username=row["username"], csrf=row["csrf"], token_hash=th)
+    session = Session(user_id=row["id"], username=row["username"], csrf=row["csrf"], token_hash=th)
+    request.scope[_SCOPE_KEY] = session
+    return session
 
 
 def _set_session_cookie(response: Response, token: str) -> None:

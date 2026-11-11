@@ -5,3 +5,5 @@ __pycache__/
 data/
 api/auth.db
 api/auth.db-journal
+api/auth.db-wal
+api/auth.db-shm
