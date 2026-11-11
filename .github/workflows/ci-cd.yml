@@ -112,7 +112,7 @@ jobs:
           CFG
       - name: Upload frontend build
         run: |
-          ssh vps "mkdir -p $APP_DIR/web/dist.new"
+          ssh vps "sudo mkdir -p $APP_DIR/web/dist.new"
           rsync -az --delete dist/ vps:$APP_DIR/web/dist.new/
       - name: Update code and restart services
         run: |
