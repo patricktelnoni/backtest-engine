@@ -74,24 +74,26 @@ export interface ScreenerRow {
   return_since_signal: number;
   stop: number;
   stop_distance: number;
-  rsi: number | null;
   exit_date: string | null;
-  exit_reason: "stop" | "rsi" | "max_hold" | null;
-  divergence: { first_date: string; first_low: number; second_date: string; second_low: number };
+  exit_reason: string | null;
+  /** Setup-specific facts (dates, prices, ratios), keys differ per setup. */
+  detail: Record<string, number | string | null>;
   history: {
     bars: number; n_trades: number; win_rate: number | null; profit_factor: number | null;
     avg_trade_return: number | null; total_return: number | null;
   };
 }
-export interface ScreenerResponse {
-  strategy: string;
-  market: string;
+export interface ScreenerSetup {
   params: Params;
+  results: ScreenerRow[];
+}
+export interface ScreenerResponse {
+  market: string;
   recent_bars: number;
   scanned: number;
   universe: number;
   generated_at: string;
   duration_s: number;
-  results: ScreenerRow[];
   errors: { ticker: string; error: string }[];
+  setups: Record<string, ScreenerSetup>;
 }

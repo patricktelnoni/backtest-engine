@@ -51,17 +51,22 @@ Repository secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (private key matching 
 `VPS_PORT` and `VPS_KNOWN_HOSTS` (`ssh-keyscan -p 22 your-host`, pins the server's host key). Create a
 `production` environment in the repository settings if you want manual approval before each deploy.
 
-## Screener (IDX bullish divergence)
+## Screener (IDX: bullish divergence, consolidated MA)
 
 A scheduled job, not a request handler: [api/screener.py](api/screener.py) downloads the missing daily bars for
 every symbol in [api/idx_universe.txt](api/idx_universe.txt) (Yahoo Finance, incremental, cached as CSV), runs
-the `bullish_divergence` setup on each, and writes one JSON file. `GET /api/screener` serves that file (one
-`stat()` per request); the **Screener** tab in the UI shows open setups, recently closed ones, the two
-divergence lows, the stop, and how the same setup did historically on that symbol.
+every setup in `btengine.screener.SETUPS` on each, and writes one JSON file. `GET /api/screener` serves that
+file (one `stat()` per request); the **Screener** tab in the UI has one sub-tab per setup with open setups,
+recently closed ones, the stop, setup-specific details and how the same setup did historically on that symbol.
+
+| Setup | Rule (long only) |
+| --- | --- |
+| `bullish_divergence` | price makes a lower swing low while RSI makes a higher low; stop = divergence low; exit on RSI >= `exit_rsi` or `max_hold` |
+| `consolidated_ma` | EMA 10/20/50/100/200 within `tightness_pct` (3%) of the close for `min_squeeze_bars` (5) bars, then a close above the highest EMA on volume >= `volume_mult` (1.5x) the `volume_window` (20) average; stop = lowest EMA at signal; exit on stop or `max_hold` (60) |
 
 ```bash
 cd api && python screener.py                   # refresh data + scan (~1 min for 100 symbols, mostly network)
-cd api && python screener.py --no-fetch -p oversold=35 -p max_hold=15
+cd api && python screener.py --no-fetch -p bullish_divergence.oversold=35 -p consolidated_ma.volume_mult=0
 ```
 
 Production: `deploy/systemd/backtest-screener.timer` runs it Mon-Fri 16:30 WIB as the service user, with the

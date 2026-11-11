@@ -253,3 +253,14 @@ table.screener .sub { display: block; font-size: 12px; color: var(--text-2); }
 table.screener .divergence span { display: block; font-size: 12px; white-space: nowrap; }
 .errors { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--text-2); }
 .pos { color: var(--good); font-weight: 600; } .neg { color: var(--bad); font-weight: 600; }
+.setup-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+.setup-tabs button {
+  width: auto; background: var(--surface); color: var(--text-2); border: 1px solid var(--border-strong); padding: 7px 14px;
+  border-radius: 10px; font-weight: 500; font-size: 13px;
+}
+.setup-tabs button:hover:not(.active) { background: var(--chip); color: var(--text); filter: none; }
+.setup-tabs button.active { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+.setup-tabs .count { display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--chip); font-size: 11px; font-weight: 600; }
+table.screener th.left, table.screener td.left { text-align: left; }
+.detail { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 14px; font-size: 12px; justify-content: start; }
+.detail em { font-style: normal; color: var(--text-2); margin-right: 4px; }

@@ -44,7 +44,7 @@ if [ "${code:-}" != "401" ]; then
   exit 1
 fi
 
-if [ ! -f /var/lib/backtest/screener/idx_bullish_divergence.json ]; then
+if [ ! -f /var/lib/backtest/screener/idx_screener.json ]; then
   echo "==> first screener run (in the background; check: journalctl -u backtest-screener)"
   sudo /usr/bin/systemctl start --no-block backtest-screener.service
 fi

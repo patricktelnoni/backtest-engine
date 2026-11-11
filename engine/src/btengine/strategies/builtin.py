@@ -149,8 +149,9 @@ class BullishDivergence(Strategy):
                             and rsi[i] > rsi[j] and rsi[j] <= p.oversold), None)
                 if ref is not None and pos == 0.0 and not exited:
                     pos, entry_bar, stop = 1.0, t, low[i]
-                    setups.append({"entry_bar": t, "pivot_bar": i, "ref_pivot_bar": ref, "stop": float(low[i]),
-                                   "exit_bar": None, "exit_reason": None})
+                    setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": float(low[i]),
+                                   "detail": {"first_low_bar": ref, "first_low": float(low[ref]), "rsi_first": float(rsi[ref]),
+                                              "second_low_bar": i, "second_low": float(low[i]), "rsi_second": float(rsi[i])}})
                 pivots.append(i)
                 # Pivots older than max_gap can never pair with a future pivot.
                 pivots = [j for j in pivots if i - j <= p.max_gap]
@@ -163,4 +164,75 @@ class BullishDivergence(Strategy):
 
     def scan(self, df) -> list[dict]:
         """Every divergence setup in `df`, in order; the last one has exit_bar None if still open."""
+        return self._run(df)[1]
+
+
+EMA_PERIODS = (10, 20, 50, 100, 200)
+
+
+class ConsolidatedMa(Strategy):
+    """Breakout from a tight bundle of EMAs (the "consolidated MA" / "superketat" setup).
+
+    The EMA 10, 20, 50, 100 and 200 are "consolidated" on a bar when the gap between the highest and the lowest
+    of them is at most `tightness_pct` of the close. Once that has held for `min_squeeze_bars` consecutive bars,
+    a close above the highest EMA (coming from at or below it on the previous bar) is the signal, provided the
+    bar's volume is at least `volume_mult` x the average of the previous `volume_window` bars (0 disables the
+    volume condition). Nothing fires before all EMAs have had `max(EMA_PERIODS)` bars of warm-up.
+
+    Exit on the first of: `max_hold` bars held, or, with `use_stop`, a close below the lowest EMA at signal time
+    (the bundle has failed as support). Long-only.
+    """
+
+    name = "consolidated_ma"
+
+    class Params(BaseModel):
+        tightness_pct: float = Field(3.0, gt=0, le=50)
+        min_squeeze_bars: int = Field(5, ge=1, le=500)
+        volume_mult: float = Field(1.5, ge=0, le=20)
+        volume_window: int = Field(20, ge=1, le=500)
+        max_hold: int = Field(60, ge=1, le=1000)
+        use_stop: bool = True
+
+    def _run(self, df) -> tuple[np.ndarray, list[dict]]:
+        p = self.params
+        close, vol = df["close"].to_numpy(), df["volume"].to_numpy(dtype=float)
+        emas = np.column_stack([df["close"].ewm(span=k, adjust=False).mean().to_numpy() for k in EMA_PERIODS])
+        top, bot = emas.max(axis=1), emas.min(axis=1)
+        spread = (top - bot) / close
+        tight = spread <= p.tightness_pct / 100
+        vol_avg = pd.Series(vol).rolling(p.volume_window).mean().shift(1).to_numpy()  # previous bars only
+        warm = max(EMA_PERIODS)
+
+        n = len(df)
+        out = np.zeros(n)
+        setups: list[dict] = []
+        pos, entry_bar, stop, run = 0.0, -1, np.nan, 0  # run = consecutive tight bars ending at t-1
+        for t in range(n):
+            exited = False
+            if pos == 1.0 and t > entry_bar:
+                reason = ("stop" if p.use_stop and close[t] < stop else
+                          "max_hold" if t - entry_bar >= p.max_hold else None)
+                if reason:
+                    pos, exited = 0.0, True
+                    setups[-1].update(exit_bar=t, exit_reason=reason)
+
+            if (pos == 0.0 and not exited and t >= warm and run >= p.min_squeeze_bars
+                    and close[t] > top[t] and close[t - 1] <= top[t - 1]):
+                ratio = vol[t] / vol_avg[t] if vol_avg[t] > 0 else np.nan
+                if p.volume_mult == 0 or ratio >= p.volume_mult:
+                    pos, entry_bar, stop = 1.0, t, float(bot[t])
+                    setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": stop,
+                                   "detail": {"squeeze_start_bar": t - run, "squeeze_bars": run,
+                                              "spread_pct": float(spread[t - 1] * 100),
+                                              "volume_ratio": None if np.isnan(ratio) else float(ratio),
+                                              "ema_top": float(top[t]), "ema_bottom": float(bot[t])}})
+            run = run + 1 if tight[t] else 0
+            out[t] = pos
+        return out, setups
+
+    def signals(self, df):
+        out, _ = self._run(df)
+        return pd.Series(out, index=df.index)
+
+    def scan(self, df) -> list[dict]:
         return self._run(df)[1]

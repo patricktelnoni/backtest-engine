@@ -1,7 +1,7 @@
 from .base import Strategy
-from .builtin import BullishDivergence, BuyHold, Donchian, RsiReversion, SmaCross
+from .builtin import BullishDivergence, BuyHold, ConsolidatedMa, Donchian, RsiReversion, SmaCross
 
-REGISTRY: dict[str, type[Strategy]] = {s.name: s for s in (BuyHold, SmaCross, RsiReversion, Donchian, BullishDivergence)}
+REGISTRY: dict[str, type[Strategy]] = {s.name: s for s in (BuyHold, SmaCross, RsiReversion, Donchian, BullishDivergence, ConsolidatedMa)}
 
 
 def get_strategy(name: str, **params) -> Strategy:

@@ -1,7 +1,7 @@
 # /etc/systemd/system/backtest-screener.service  -- started by backtest-screener.timer (or by hand:
 #   sudo systemctl start backtest-screener.service ; journalctl -u backtest-screener -n 50)
 # Refreshes the cached IDX OHLCV data (~100 small requests to Yahoo Finance) and rewrites
-# /var/lib/backtest/screener/idx_bullish_divergence.json, which the API serves at GET /api/screener.
+# /var/lib/backtest/screener/idx_screener.json, which the API serves at GET /api/screener.
 [Unit]
 Description=Backtest Platform IDX screener (daily data refresh + scan)
 After=network-online.target

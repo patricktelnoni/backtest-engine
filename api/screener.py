@@ -1,15 +1,16 @@
-"""IDX bullish-divergence screener: the scheduled job (data refresh + scan) and the endpoint serving its result.
+"""IDX setup screener (bullish divergence, consolidated MA): the scheduled job (data refresh + scan) and the endpoint serving its result.
 
 Job (run from ./api, as the service user; systemd timer deploy/systemd/backtest-screener.timer does this on
 weekdays after the IDX close):
     python screener.py                    # refresh cached OHLCV from Yahoo Finance, scan, write the result file
     python screener.py --no-fetch         # scan the cached data only (offline / re-run with other params)
-    python screener.py -p oversold=35 -p max_hold=15
+    python screener.py -p bullish_divergence.oversold=35 -p consolidated_ma.max_hold=30
 
 Files under BT_SCREENER_DIR (default: ./screener_data; production: /var/lib/backtest/screener):
     ohlcv/<TICKER>.csv                    per-symbol daily bars, extended incrementally (only missing days are
                                           downloaded, so a daily run is ~1 small request per symbol)
-    idx_bullish_divergence.json           the latest result, served as-is by GET /api/screener
+    idx_screener.json                     the latest result (every setup in btengine.screener.SETUPS), served
+                                          as-is by GET /api/screener
 
 The API process never fetches or scans: it only reads the result file, so a request costs one stat() call.
 Data source: Yahoo Finance chart endpoint (unofficial, no key; same rules as scripts/fetch_sample_data.py).
@@ -33,11 +34,11 @@ from fastapi.responses import Response
 
 from btengine.cli import _parse_param
 from btengine.data import read_ohlcv_csv
-from btengine.screener import screen_bullish_divergence
+from btengine.screener import SETUPS, screen
 
 log = logging.getLogger("backtest.screener")
 HERE = os.path.dirname(os.path.abspath(__file__))
-RESULT_NAME = "idx_bullish_divergence.json"
+RESULT_NAME = "idx_screener.json"
 UA = "Mozilla/5.0 (compatible; backtest-platform-screener)"
 FULL_RANGE = "5y"
 
@@ -196,13 +197,15 @@ def load_frames(tickers: list[str]) -> tuple[dict, dict[str, str]]:
     return frames, errors
 
 
-def run(params: dict | None = None, fetch: bool = True, recent_bars: int = 10, fetcher=fetch_yahoo) -> dict:
-    """Refresh data (unless fetch=False), scan the universe and write the result file atomically."""
+def run(params: dict[str, dict] | None = None, fetch: bool = True, recent_bars: int = 10, fetcher=fetch_yahoo) -> dict:
+    """Refresh data (unless fetch=False), scan the universe with every setup and write the result file atomically.
+    `params` = {setup name: {param: value}} overrides; setups not mentioned run with their defaults."""
     t0 = time.perf_counter()
     tickers = load_universe()
     errors = refresh_cache(tickers, fetch=fetcher) if fetch else {}
     frames, load_errors = load_frames(tickers)
-    result = screen_bullish_divergence(frames, params, recent_bars=recent_bars)
+    setups = {name: (params or {}).get(name) for name in SETUPS}
+    result = screen(frames, setups, recent_bars=recent_bars)
     for t, e in {**load_errors, **errors}.items():
         result["errors"].append({"ticker": t, "error": e})
     result["errors"].sort(key=lambda x: x["ticker"])
@@ -213,8 +216,9 @@ def run(params: dict | None = None, fetch: bool = True, recent_bars: int = 10, f
     with open(tmp, "w") as f:
         json.dump(result, f, separators=(",", ":"))
     os.replace(tmp, result_path())
-    log.info("scanned %d/%d symbols, %d setups, %d errors, %.1fs", result["scanned"], len(tickers),
-             len(result["results"]), len(result["errors"]), result["duration_s"])
+    found = ", ".join(f"{k}={len(v['results'])}" for k, v in result["setups"].items())
+    log.info("scanned %d/%d symbols (%s), %d errors, %.1fs", result["scanned"], len(tickers), found,
+             len(result["errors"]), result["duration_s"])
     return result
 
 
@@ -243,15 +247,21 @@ async def screener():
 # ---------- CLI ----------
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Refresh IDX data and screen for bullish divergence.")
+    ap = argparse.ArgumentParser(description="Refresh IDX data and screen for every setup.")
     ap.add_argument("--no-fetch", action="store_true", help="scan cached data only")
-    ap.add_argument("-p", "--param", action="append", default=[], type=_parse_param, metavar="KEY=VALUE",
-                    help="bullish_divergence parameter, repeatable")
+    ap.add_argument("-p", "--param", action="append", default=[], type=_parse_param, metavar="SETUP.KEY=VALUE",
+                    help=f"setup parameter, repeatable; setups: {', '.join(SETUPS)}")
     ap.add_argument("--recent-bars", type=int, default=10, help="also list setups closed within N bars (default 10)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    params: dict[str, dict] = {}
+    for key, value in args.param:
+        setup, _, name = key.partition(".")
+        if setup not in SETUPS or not name:
+            ap.error(f"-p expects SETUP.KEY=VALUE with SETUP one of {', '.join(SETUPS)}; got {key!r}")
+        params.setdefault(setup, {})[name] = value
     try:
-        run(dict(args.param), fetch=not args.no_fetch, recent_bars=args.recent_bars)
+        run(params, fetch=not args.no_fetch, recent_bars=args.recent_bars)
     except Exception as e:
         log.error("screener failed: %s", e)
         return 1

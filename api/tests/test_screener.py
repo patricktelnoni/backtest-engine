@@ -49,7 +49,9 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
     assert [c[0] for c in calls] == ["AAAA.JK", "BBBB.JK", "FAIL.JK"] and calls[0][1] == "5y"
     assert out["scanned"] == 2 and out["universe"] == 3
     assert [e["ticker"] for e in out["errors"]] == ["FAIL"] and "boom" in out["errors"][0]["error"]
-    assert out["generated_at"].endswith("+00:00") and out["params"]["rsi_period"] == 14
+    assert out["generated_at"].endswith("+00:00")
+    assert set(out["setups"]) == {"bullish_divergence", "consolidated_ma"}
+    assert out["setups"]["bullish_divergence"]["params"]["rsi_period"] == 14
     assert os.path.exists(os.path.join(screener.cache_dir(), "AAAA.csv"))
     # served verbatim, with the usual auth + no-store rules
     r = client.get("/api/screener")
@@ -62,8 +64,10 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
     expected = "5y" if dt.date.today().weekday() == 0 else screener._range_for((dt.date.today() - dt.date(2022, 2, 7)).days + 1)
     assert calls[0] == ("AAAA.JK", expected)
     # offline re-run with other params re-reads the cache and rewrites the file
-    out2 = screener.run({"max_hold": 7}, fetch=False, fetcher=None)
-    assert out2["params"]["max_hold"] == 7 and client.get("/api/screener").json()["params"]["max_hold"] == 7
+    out2 = screener.run({"consolidated_ma": {"max_hold": 7}}, fetch=False, fetcher=None)
+    assert out2["setups"]["consolidated_ma"]["params"]["max_hold"] == 7
+    assert out2["setups"]["bullish_divergence"]["params"]["max_hold"] == 20   # untouched default
+    assert client.get("/api/screener").json() == out2
 
 
 def test_range_for_days_missing():
@@ -73,5 +77,9 @@ def test_range_for_days_missing():
 def test_cli_parses_params(monkeypatch):
     seen = {}
     monkeypatch.setattr(screener, "run", lambda params, fetch, recent_bars: seen.update(params=params, fetch=fetch, rb=recent_bars))
-    assert screener.main(["--no-fetch", "-p", "oversold=35", "-p", "use_stop=false", "--recent-bars", "3"]) == 0
-    assert seen == {"params": {"oversold": 35, "use_stop": False}, "fetch": False, "rb": 3}
+    assert screener.main(["--no-fetch", "-p", "bullish_divergence.oversold=35", "-p", "consolidated_ma.use_stop=false",
+                          "--recent-bars", "3"]) == 0
+    assert seen == {"params": {"bullish_divergence": {"oversold": 35}, "consolidated_ma": {"use_stop": False}},
+                    "fetch": False, "rb": 3}
+    with pytest.raises(SystemExit):
+        screener.main(["-p", "oversold=35"])
