@@ -4,15 +4,56 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
+from contextlib import asynccontextmanager
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+import auth
 from btengine import REGISTRY, Market, get_spec, run_backtest
 from btengine.cli import _demo_data
 
-app = FastAPI(title="Backtest API")
+
+@asynccontextmanager
+async def _lifespan(_app):
+    auth._dummy_hash()  # compute once up front so the first unknown-user login is not measurably slower
+    yield
+
+
+# Interactive docs/OpenAPI schema are off unless explicitly enabled (BT_ENABLE_DOCS=1, e.g. for local dev).
+_docs = os.environ.get("BT_ENABLE_DOCS") == "1"
+app = FastAPI(title="Backtest API", docs_url="/docs" if _docs else None, redoc_url=None,
+              openapi_url="/openapi.json" if _docs else None, lifespan=_lifespan)
+
+
+PUBLIC_PATHS = {"/api/auth/login"}
+
+
+@app.middleware("http")
+async def _api_guard(request: Request, call_next):
+    """Reject unauthenticated /api/ calls *before* FastAPI reads the body (uploads can be 20 MB), and mark
+    every API response no-store: results and CSRF tokens must not end up in a browser or proxy cache.
+    The per-route dependency below is the authoritative check; this is the early, cheap one."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in PUBLIC_PATHS:
+        try:
+            await run_in_threadpool(auth.current_session, request)
+        except HTTPException as e:
+            resp = JSONResponse({"detail": e.detail}, status_code=e.status_code)
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+    resp = await call_next(request)
+    if path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+# Every data endpoint requires a logged-in session (and a CSRF token for POST).
+api = APIRouter(dependencies=[Depends(auth.current_session)])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_COMPARE_RUNS = 6
@@ -120,17 +161,17 @@ def _date(ts) -> str:
     return ts.strftime("%Y-%m-%d")
 
 
-@app.get("/api/strategies")
+@api.get("/api/strategies")
 def strategies():
     return [{"name": n, "params_schema": c.schema()} for n, c in sorted(REGISTRY.items())]
 
 
-@app.get("/api/markets")
+@api.get("/api/markets")
 def markets():
     return [{"name": m.value, **get_spec(m).model_dump(exclude={"market"}, mode="json")} for m in Market]
 
 
-@app.post("/api/backtest")
+@api.post("/api/backtest")
 async def backtest(common: Common = Depends(), strategy: str = Form(...), params: str = Form("{}")):
     _check_strategy(strategy)
     strategy_params = _parse_params(params)
@@ -158,7 +199,7 @@ async def backtest(common: Common = Depends(), strategy: str = Form(...), params
     }
 
 
-@app.post("/api/compare")
+@api.post("/api/compare")
 async def compare(common: Common = Depends(), runs: str = Form(...)):
     """`runs` = JSON list of {"strategy": str, "params": {...}}; all share data/market/costs."""
     try:
@@ -203,3 +244,7 @@ async def compare(common: Common = Depends(), runs: str = Form(...)):
         "series": series,
         "bars": len(df),
     }
+
+
+app.include_router(auth.router)
+app.include_router(api)

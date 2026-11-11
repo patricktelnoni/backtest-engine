@@ -1,6 +1,71 @@
 import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
 
+// ---------- session ----------
+// The session itself is an HttpOnly cookie (JS cannot read it). The CSRF token lives only in memory and is
+// sent on every POST; a reload fetches it again from /api/auth/me.
+let csrfToken = "";
+let onUnauthorized: () => void = () => {};
+
+/** Called when any API call answers 401 (session expired / logged out elsewhere). */
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+export interface Me {
+  username: string;
+  csrf_token: string;
+}
+
+export class LoginError extends Error {
+  constructor(public status: number, public retryAfterS: number | null) {
+    super(`login failed (${status})`);
+  }
+}
+
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (init.method && init.method !== "GET") headers.set("X-CSRF-Token", csrfToken);
+  return fetch(path, { ...init, headers, credentials: "same-origin", cache: "no-store" });
+}
+
+/** The logged-in user, or null when there is no valid session. */
+export async function getMe(): Promise<Me | null> {
+  const res = await apiFetch("/api/auth/me");
+  if (res.status === 401) return null;
+  const me = await check<Me>(res);
+  csrfToken = me.csrf_token;
+  return me;
+}
+
+export async function login(username: string, password: string): Promise<Me> {
+  const res = await apiFetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    const ra = Number(res.headers.get("Retry-After"));
+    throw new LoginError(res.status, Number.isFinite(ra) && ra > 0 ? ra : null);
+  }
+  const me: Me = await res.json();
+  csrfToken = me.csrf_token;
+  return me;
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } finally {
+    csrfToken = "";
+  }
+}
+
 async function check<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    csrfToken = "";
+    onUnauthorized();
+    throw new Error("Sesi Anda berakhir. Silakan masuk lagi.");
+  }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
@@ -14,8 +79,8 @@ async function check<T>(res: Response): Promise<T> {
   return res.json();
 }
 
-export const getStrategies = () => fetch("/api/strategies").then(check<StrategyInfo[]>);
-export const getMarkets = () => fetch("/api/markets").then(check<MarketInfo[]>);
+export const getStrategies = () => apiFetch("/api/strategies").then(check<StrategyInfo[]>);
+export const getMarkets = () => apiFetch("/api/markets").then(check<MarketInfo[]>);
 
 export interface RunSpec {
   strategy: string;
@@ -46,11 +111,11 @@ export function runBacktest(i: RunInput, run: RunSpec, signal?: AbortSignal): Pr
   const f = baseForm(i);
   f.set("strategy", run.strategy);
   f.set("params", JSON.stringify(run.params));
-  return fetch("/api/backtest", { method: "POST", body: f, signal }).then(check<BacktestResponse>);
+  return apiFetch("/api/backtest", { method: "POST", body: f, signal }).then(check<BacktestResponse>);
 }
 
 export function runCompare(i: RunInput, runs: RunSpec[], signal?: AbortSignal): Promise<CompareResponse> {
   const f = baseForm(i);
   f.set("runs", JSON.stringify(runs));
-  return fetch("/api/compare", { method: "POST", body: f, signal }).then(check<CompareResponse>);
+  return apiFetch("/api/compare", { method: "POST", body: f, signal }).then(check<CompareResponse>);
 }

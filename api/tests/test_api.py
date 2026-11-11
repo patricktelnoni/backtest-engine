@@ -4,11 +4,16 @@ import math
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 
-from main import MAX_COMPARE_RUNS, app
+from conftest import login, make_client
+from main import MAX_COMPARE_RUNS
 
-client = TestClient(app)
+client = make_client()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _logged_in(_user):
+    assert login(client).status_code == 200
 
 
 def csv_bytes(n=200, seed=0, header="Date,Open,High,Low,Close,Volume") -> bytes:

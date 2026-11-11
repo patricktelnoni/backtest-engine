@@ -10,8 +10,11 @@
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e "engine[dev]" -r api/requirements-dev.txt
 
-# terminal 1
-cd api && uvicorn main:app --reload --port 8001
+# once: create a login (there is no public sign-up)
+cd api && BT_COOKIE_SECURE=0 python manage.py add admin --generate && cd ..
+
+# terminal 1  (BT_COOKIE_SECURE=0 only because local dev is plain http)
+cd api && BT_COOKIE_SECURE=0 uvicorn main:app --reload --port 8001
 
 # terminal 2
 cd web && npm install && npm run dev      # http://localhost:5173
@@ -23,9 +26,31 @@ API on another port: `API_URL=http://127.0.0.1:9000 npm run dev`.
 
 ```bash
 (cd engine && pytest)     # engine: 12 tests
-(cd api && pytest)        # HTTP layer: 36 tests
+(cd api && pytest)        # HTTP layer + auth: 74 tests
 (cd web && npm run build) # type-check + bundle
 ```
+
+## Authentication
+
+Every `/api/*` endpoint except `POST /api/auth/login` needs a logged-in session. Implementation: [api/auth.py](api/auth.py).
+
+- **Accounts** are created by an operator only: `python manage.py add|passwd|delete|revoke|list` (run in `api/`).
+  Passwords: at least 14 characters, 3 of lowercase/uppercase/digits/symbols, not a common word, not containing
+  the username. `--generate` creates a random 24-character password.
+- **Password storage**: scrypt (N=2^15, r=8, p=1), random salt per user, constant-time comparison.
+- **Sessions**: 256-bit random token in an `HttpOnly; Secure; SameSite=Strict` cookie named `__Host-bt_session`.
+  The database holds only its SHA-256. Sessions end after 60 minutes idle or 12 hours, on logout, or when the password changes.
+- **CSRF**: every POST must send the session's token in `X-CSRF-Token`. Login only accepts JSON.
+- **Brute force**: 5 failed logins per username or 20 per IP within 15 minutes give `429` with `Retry-After`. Unknown
+  usernames get the same error and the same hashing cost, so usernames cannot be enumerated.
+- **Other**: API responses are `Cache-Control: no-store`. `/docs` and `/openapi.json` are off unless `BT_ENABLE_DOCS=1`.
+  Failed logins are logged (`backtest.auth`, with IP).
+
+| Env var | Default | |
+| --- | --- | --- |
+| `BT_AUTH_DB` | `api/auth.db` | SQLite file with users and sessions (created with mode 600) |
+| `BT_COOKIE_SECURE` | `1` | `0` only for local plain-http dev |
+| `BT_SESSION_IDLE_MINUTES` / `BT_SESSION_MAX_HOURS` | `60` / `12` | session lifetimes |
 
 ## UI
 
@@ -37,6 +62,7 @@ API on another port: `API_URL=http://127.0.0.1:9000 npm run dev`.
 
 | Endpoint | Purpose |
 | --- | --- |
+| `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` | session (see Authentication) |
 | `GET /api/strategies`, `GET /api/markets` | catalog (strategy param JSON schemas, market cost defaults) |
 | `POST /api/backtest` | one strategy; returns metrics, series, trades |
 | `POST /api/compare` | `runs` = JSON list of `{strategy, params}`; returns per-run metrics + aligned series |

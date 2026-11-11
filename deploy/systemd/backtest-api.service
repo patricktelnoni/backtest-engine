@@ -1,0 +1,43 @@
+# /etc/systemd/system/backtest-api.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now backtest-api
+#   journalctl -u backtest-api -f
+[Unit]
+Description=Backtest Platform API (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+User=backtest
+Group=backtest
+WorkingDirectory=/opt/backtest-platform/api
+
+# Users + sessions database. systemd creates /var/lib/backtest (owned by User=, mode 0700).
+StateDirectory=backtest
+StateDirectoryMode=0700
+UMask=0077
+Environment=BT_AUTH_DB=/var/lib/backtest/auth.db
+Environment=BT_COOKIE_SECURE=1
+Environment=BT_SESSION_IDLE_MINUTES=60
+Environment=BT_SESSION_MAX_HOURS=12
+
+# Bind to localhost only: nginx is the sole public entry point.
+ExecStart=/opt/backtest-platform/.venv/bin/uvicorn main:app \
+    --host 127.0.0.1 --port 8001 --workers 2 \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1 --no-server-header
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

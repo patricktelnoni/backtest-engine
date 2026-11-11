@@ -212,3 +212,22 @@ th.run-col { text-transform: none; letter-spacing: 0; font-size: 12.5px; white-s
 table.trades td, table.trades th { padding: 8px 8px; }
 table.trades td { white-space: normal; }
 .sub { display: block; color: var(--text-2); font-size: 12px; }
+
+/* ---------- Login & account ---------- */
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.user-chip { font-size: 13px; color: var(--text-2); padding: 6px 10px; border-radius: 999px; background: var(--chip); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; position: relative;
+  background: radial-gradient(900px 480px at 50% -10%, var(--accent-soft), transparent 70%), var(--page); }
+.login-theme { position: absolute; top: 16px; right: 16px; }
+.login-card { width: min(380px, 100%); display: grid; gap: 16px; padding: 28px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }
+.login-card .brand { font-size: 16px; }
+.login-card .error { margin: 0; }
+.login-sub { margin: 4px 0 0; font-size: 13px; }
+.pw-field { position: relative; display: block; }
+.pw-field input { padding-right: 104px; }
+.pw-toggle { position: absolute; top: 4px; right: 4px; width: auto; height: 28px; padding: 0 10px; font-size: 12px; font-weight: 500;
+  background: transparent; color: var(--accent-text); border-radius: 6px; }
+.pw-toggle:hover:not(:disabled) { background: var(--accent-soft); filter: none; }
+@media (max-width: 520px) { .user-chip { display: none; } }
+.notice { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent-text) 40%, transparent); color: var(--text); padding: 12px 14px; border-radius: 12px; }

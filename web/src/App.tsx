@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import ThemeToggle from "./ThemeToggle";
-import { getMarkets, getStrategies, runBacktest, runCompare, type RunInput } from "./api";
+import {
+  getMarkets, getMe, getStrategies, logout, runBacktest, runCompare, setUnauthorizedHandler, type Me, type RunInput,
+} from "./api";
 import Compare from "./Compare";
+import Login from "./Login";
 import ConfigPanel, { MAX_RUNS, type Config, type RunCfg } from "./ConfigPanel";
 import Results from "./Results";
 import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
@@ -28,6 +31,9 @@ function firstInvalidNumber(cfg: Config): string | null {
 }
 
 export default function App() {
+  // undefined = still checking the session; null = logged out
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [cfg, setCfg] = useState<Config | null>(null);
@@ -38,6 +44,26 @@ export default function App() {
   const nextId = useRef(1);
 
   useEffect(() => {
+    setUnauthorizedHandler(() => {
+      abort.current?.abort();
+      setMe(null);
+      setAuthNotice("Sesi Anda berakhir. Silakan masuk lagi.");
+    });
+    getMe().then(setMe).catch(() => {
+      setMe(null);
+      setAuthNotice("Tidak bisa menghubungi API. Pastikan backend berjalan.");
+    });
+  }, []);
+
+  // Wipe everything loaded under the previous session when the user changes or logs out.
+  useEffect(() => {
+    setOutcome(null);
+    setError(null);
+    setCfg(null);
+  }, [me?.username]);
+
+  useEffect(() => {
+    if (!me) return;
     Promise.all([getStrategies(), getMarkets()])
       .then(([s, m]) => {
         setStrategies(s);
@@ -49,8 +75,8 @@ export default function App() {
           market: mkt.name, costs: { ...mkt.default_costs }, initialCash: 10000, start: "", end: "", file: null,
         });
       })
-      .catch((e: Error) => setError(`Tidak bisa menghubungi API: ${e.message}. Pastikan backend jalan (uvicorn di port 8001).`));
-  }, []);
+      .catch((e: Error) => setError(`Tidak bisa memuat katalog strategi: ${e.message}`));
+  }, [me?.username]);
 
   const run = async () => {
     if (!cfg) return;
@@ -102,6 +128,20 @@ export default function App() {
     setCfg((c) => c && { ...c, market: name, costs: { ...m.default_costs } });
   };
 
+  const signOut = async () => {
+    abort.current?.abort();
+    await logout().catch(() => {});
+    setAuthNotice("Anda sudah keluar.");
+    setMe(null);
+  };
+  const signedIn = (m: Me) => {
+    setAuthNotice(null);
+    setMe(m);
+  };
+
+  if (me === undefined) return <div className="login-page" aria-busy="true" />;
+  if (me === null) return <Login onLogin={signedIn} notice={authNotice} />;
+
   return (
     <div className="app">
       <header className="topbar">
@@ -113,7 +153,11 @@ export default function App() {
           </svg>
           <span>Backtest Platform</span>
         </div>
-        <ThemeToggle />
+        <div className="topbar-actions">
+          <ThemeToggle />
+          <span className="user-chip" title="Pengguna yang sedang masuk">{me.username}</span>
+          <button type="button" className="ghost" onClick={signOut}>Keluar</button>
+        </div>
       </header>
       <div className="layout">
         <aside>
