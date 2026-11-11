@@ -264,3 +264,4 @@ table.screener .divergence span { display: block; font-size: 12px; white-space: 
 table.screener th.left, table.screener td.left { text-align: left; }
 .detail { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 14px; font-size: 12px; justify-content: start; }
 .detail em { font-style: normal; color: var(--text-2); margin-right: 4px; }
+[hidden] { display: none !important; }

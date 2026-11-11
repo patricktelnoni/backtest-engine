@@ -167,8 +167,8 @@ export default function App() {
           <button type="button" className="ghost" onClick={signOut}>Keluar</button>
         </div>
       </header>
-      {view === "screener" && <Screener />}
-      <div className="layout" hidden={view !== "screener" ? undefined : true}>
+      {view === "screener" ? <Screener /> : (
+      <div className="layout">
         <aside>
           {cfg && (
             <ConfigPanel
@@ -203,6 +203,7 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
     </div>
   );
 }
