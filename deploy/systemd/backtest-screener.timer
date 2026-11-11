@@ -1,0 +1,13 @@
+# /etc/systemd/system/backtest-screener.timer
+#   sudo systemctl enable --now backtest-screener.timer ; systemctl list-timers backtest-screener.timer
+[Unit]
+Description=Run the IDX screener on trading days after the close
+
+[Timer]
+# IDX closes 16:00 WIB on Mon-Fri; Yahoo has the completed bar shortly after.
+OnCalendar=Mon..Fri 16:30 Asia/Jakarta
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

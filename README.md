@@ -51,6 +51,24 @@ Repository secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (private key matching 
 `VPS_PORT` and `VPS_KNOWN_HOSTS` (`ssh-keyscan -p 22 your-host`, pins the server's host key). Create a
 `production` environment in the repository settings if you want manual approval before each deploy.
 
+## Screener (IDX bullish divergence)
+
+A scheduled job, not a request handler: [api/screener.py](api/screener.py) downloads the missing daily bars for
+every symbol in [api/idx_universe.txt](api/idx_universe.txt) (Yahoo Finance, incremental, cached as CSV), runs
+the `bullish_divergence` setup on each, and writes one JSON file. `GET /api/screener` serves that file (one
+`stat()` per request); the **Screener** tab in the UI shows open setups, recently closed ones, the two
+divergence lows, the stop, and how the same setup did historically on that symbol.
+
+```bash
+cd api && python screener.py                   # refresh data + scan (~1 min for 100 symbols, mostly network)
+cd api && python screener.py --no-fetch -p oversold=35 -p max_hold=15
+```
+
+Production: `deploy/systemd/backtest-screener.timer` runs it Mon-Fri 16:30 WIB as the service user, with the
+lowest CPU/I-O priority; `deploy.sh` installs and enables it, and starts the first run if there is no result yet.
+Compute cost is ~1 ms per symbol; state lives in `BT_SCREENER_DIR` (default `api/screener_data`,
+production `/var/lib/backtest/screener`). `BT_SCREENER_UNIVERSE` points at another symbol list.
+
 ## Authentication
 
 Every `/api/*` endpoint except `POST /api/auth/login` needs a logged-in session. Implementation: [api/auth.py](api/auth.py).

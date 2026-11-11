@@ -122,7 +122,8 @@ class BullishDivergence(Strategy):
                 raise ValueError("min_gap must be < max_gap")
             return self
 
-    def signals(self, df):
+    def _run(self, df) -> tuple[np.ndarray, list[dict]]:
+        """Position per bar plus one record per setup taken (used by the screener to explain a signal)."""
         p = self.params
         low, close = df["low"].to_numpy(), df["close"].to_numpy()
         rsi = _rsi(df["close"], p.rsi_period).to_numpy()
@@ -130,23 +131,36 @@ class BullishDivergence(Strategy):
 
         out = np.zeros(len(df))
         pivots: list[int] = []
+        setups: list[dict] = []
         pos, entry_bar, stop = 0.0, -1, np.nan
         for t in range(len(df)):
             exited = False
             if pos == 1.0 and t > entry_bar:
-                if (p.use_stop and close[t] < stop) or rsi[t] >= p.exit_rsi or t - entry_bar >= p.max_hold:
+                reason = ("stop" if p.use_stop and close[t] < stop else
+                          "rsi" if rsi[t] >= p.exit_rsi else
+                          "max_hold" if t - entry_bar >= p.max_hold else None)
+                if reason:
                     pos, exited = 0.0, True
+                    setups[-1].update(exit_bar=t, exit_reason=reason)
 
             i = t - R  # the only pivot candidate that becomes confirmed at bar t
             if i - L >= 0 and low[i] < low[i - L:i].min() and low[i] <= low[i + 1:t + 1].min():
-                diverges = any(
-                    p.min_gap <= i - j <= p.max_gap and low[i] < low[j] and rsi[i] > rsi[j] and rsi[j] <= p.oversold
-                    for j in pivots
-                )
-                if diverges and pos == 0.0 and not exited:
+                ref = next((j for j in pivots if p.min_gap <= i - j <= p.max_gap and low[i] < low[j]
+                            and rsi[i] > rsi[j] and rsi[j] <= p.oversold), None)
+                if ref is not None and pos == 0.0 and not exited:
                     pos, entry_bar, stop = 1.0, t, low[i]
+                    setups.append({"entry_bar": t, "pivot_bar": i, "ref_pivot_bar": ref, "stop": float(low[i]),
+                                   "exit_bar": None, "exit_reason": None})
                 pivots.append(i)
                 # Pivots older than max_gap can never pair with a future pivot.
                 pivots = [j for j in pivots if i - j <= p.max_gap]
             out[t] = pos
+        return out, setups
+
+    def signals(self, df):
+        out, _ = self._run(df)
         return pd.Series(out, index=df.index)
+
+    def scan(self, df) -> list[dict]:
+        """Every divergence setup in `df`, in order; the last one has exit_bar None if still open."""
+        return self._run(df)[1]

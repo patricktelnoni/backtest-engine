@@ -7,3 +7,4 @@ api/auth.db
 api/auth.db-journal
 api/auth.db-wal
 api/auth.db-shm
+api/screener_data/

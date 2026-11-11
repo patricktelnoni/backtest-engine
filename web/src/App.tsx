@@ -7,7 +7,10 @@ import Compare from "./Compare";
 import Login from "./Login";
 import ConfigPanel, { MAX_RUNS, type Config, type RunCfg } from "./ConfigPanel";
 import Results from "./Results";
+import Screener from "./Screener";
 import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
+
+type View = "backtest" | "screener";
 
 type Outcome =
   | { kind: "single"; data: BacktestResponse; strategy: string; market: string; initialCash: number }
@@ -40,6 +43,7 @@ export default function App() {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<View>("backtest");
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(1);
 
@@ -153,13 +157,18 @@ export default function App() {
           </svg>
           <span>Backtest Platform</span>
         </div>
+        <nav className="nav" aria-label="Halaman">
+          <button type="button" className={view === "backtest" ? "active" : ""} onClick={() => setView("backtest")}>Backtest</button>
+          <button type="button" className={view === "screener" ? "active" : ""} onClick={() => setView("screener")}>Screener</button>
+        </nav>
         <div className="topbar-actions">
           <ThemeToggle />
           <span className="user-chip" title="Pengguna yang sedang masuk">{me.username}</span>
           <button type="button" className="ghost" onClick={signOut}>Keluar</button>
         </div>
       </header>
-      <div className="layout">
+      {view === "screener" && <Screener />}
+      <div className="layout" hidden={view !== "screener" ? undefined : true}>
         <aside>
           {cfg && (
             <ConfigPanel

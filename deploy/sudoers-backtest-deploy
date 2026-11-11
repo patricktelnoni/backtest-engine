@@ -2,7 +2,11 @@
 # The deploy user may run exactly the commands deploy/deploy.sh needs, nothing else. Replace "deploy" with VPS_USER.
 Cmnd_Alias BT_DEPLOY = \
     /usr/bin/install -m 644 /opt/backtest-platform/deploy/systemd/backtest-api.service /etc/systemd/system/backtest-api.service, \
+    /usr/bin/install -m 644 /opt/backtest-platform/deploy/systemd/backtest-screener.service /etc/systemd/system/backtest-screener.service, \
+    /usr/bin/install -m 644 /opt/backtest-platform/deploy/systemd/backtest-screener.timer /etc/systemd/system/backtest-screener.timer, \
     /usr/bin/install -m 644 /opt/backtest-platform/deploy/nginx/backtest.conf /etc/nginx/sites-available/backtest.conf, \
+    /usr/bin/systemctl enable --now backtest-screener.timer, \
+    /usr/bin/systemctl start --no-block backtest-screener.service, \
     /usr/bin/systemctl daemon-reload, \
     /usr/bin/systemctl restart backtest-api, \
     /usr/bin/systemctl status backtest-api --no-pager, \

@@ -1,4 +1,4 @@
-import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
+import type { BacktestResponse, CompareResponse, MarketInfo, Params, ScreenerResponse, StrategyInfo } from "./types";
 
 // ---------- session ----------
 // The session itself is an HttpOnly cookie (JS cannot read it). The CSRF token lives only in memory and is
@@ -118,4 +118,11 @@ export function runCompare(i: RunInput, runs: RunSpec[], signal?: AbortSignal): 
   const f = baseForm(i);
   f.set("runs", JSON.stringify(runs));
   return apiFetch("/api/compare", { method: "POST", body: f, signal }).then(check<CompareResponse>);
+}
+
+/** Latest screener result, or null when the scheduled job has not produced one yet. */
+export async function getScreener(): Promise<ScreenerResponse | null> {
+  const res = await apiFetch("/api/screener");
+  if (res.status === 404) return null;
+  return check<ScreenerResponse>(res);
 }

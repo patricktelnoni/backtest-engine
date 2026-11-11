@@ -62,3 +62,36 @@ export interface CompareResponse {
   series: CompareRow[];
   bars: number;
 }
+
+export interface ScreenerRow {
+  ticker: string;
+  status: "active" | "exited";
+  signal_date: string;
+  signal_price: number;
+  bars_since_signal: number;
+  last_date: string;
+  last_close: number;
+  return_since_signal: number;
+  stop: number;
+  stop_distance: number;
+  rsi: number | null;
+  exit_date: string | null;
+  exit_reason: "stop" | "rsi" | "max_hold" | null;
+  divergence: { first_date: string; first_low: number; second_date: string; second_low: number };
+  history: {
+    bars: number; n_trades: number; win_rate: number | null; profit_factor: number | null;
+    avg_trade_return: number | null; total_return: number | null;
+  };
+}
+export interface ScreenerResponse {
+  strategy: string;
+  market: string;
+  params: Params;
+  recent_bars: number;
+  scanned: number;
+  universe: number;
+  generated_at: string;
+  duration_s: number;
+  results: ScreenerRow[];
+  errors: { ticker: string; error: string }[];
+}

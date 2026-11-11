@@ -4,6 +4,7 @@ import tempfile
 # Must be set before `main`/`auth` are imported by the test modules: a throwaway database per test run.
 _tmp = tempfile.mkdtemp(prefix="bt-auth-")
 os.environ["BT_AUTH_DB"] = os.path.join(_tmp, "auth.db")
+os.environ["BT_SCREENER_DIR"] = os.path.join(_tmp, "screener")
 os.environ.pop("BT_COOKIE_SECURE", None)  # test the production (Secure, __Host-) cookie
 
 import pytest  # noqa: E402

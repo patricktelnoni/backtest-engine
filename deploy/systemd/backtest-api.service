@@ -18,6 +18,7 @@ Environment=BT_AUTH_DB=/var/lib/backtest/auth.db
 Environment=BT_COOKIE_SECURE=1
 Environment=BT_SESSION_IDLE_MINUTES=60
 Environment=BT_SESSION_MAX_HOURS=12
+Environment=BT_SCREENER_DIR=/var/lib/backtest/screener
 
 # Compute pool inside the one process: CSV parsing, backtests and JSON encoding run on BT_BACKTEST_THREADS
 # threads (the GIL makes more threads cost memory, not throughput); up to BT_BACKTEST_QUEUE more requests

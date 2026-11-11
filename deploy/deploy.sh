@@ -25,8 +25,11 @@ chmod -R o+rX "$APP_DIR/web/dist" "$APP_DIR/api" "$APP_DIR/engine" "$APP_DIR/.ve
 
 echo "==> system config"
 sudo /usr/bin/install -m 644 "$APP_DIR/deploy/systemd/backtest-api.service" /etc/systemd/system/backtest-api.service
+sudo /usr/bin/install -m 644 "$APP_DIR/deploy/systemd/backtest-screener.service" /etc/systemd/system/backtest-screener.service
+sudo /usr/bin/install -m 644 "$APP_DIR/deploy/systemd/backtest-screener.timer" /etc/systemd/system/backtest-screener.timer
 sudo /usr/bin/install -m 644 "$APP_DIR/deploy/nginx/backtest.conf" /etc/nginx/sites-available/backtest.conf
 sudo /usr/bin/systemctl daemon-reload
+sudo /usr/bin/systemctl enable --now backtest-screener.timer
 
 echo "==> restart api"
 sudo /usr/bin/systemctl restart backtest-api
@@ -39,6 +42,11 @@ if [ "${code:-}" != "401" ]; then
   echo "API did not come up (last status: ${code:-none})" >&2
   sudo /usr/bin/systemctl status backtest-api --no-pager || true
   exit 1
+fi
+
+if [ ! -f /var/lib/backtest/screener/idx_bullish_divergence.json ]; then
+  echo "==> first screener run (in the background; check: journalctl -u backtest-screener)"
+  sudo /usr/bin/systemctl start --no-block backtest-screener.service
 fi
 
 echo "==> reload nginx"

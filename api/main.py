@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 
 import auth
+import screener
 from btengine import REGISTRY, CostModel, Market, get_spec, run_backtest
 from btengine.cli import _demo_data
 from btengine.data import read_ohlcv_csv, validate_ohlcv
@@ -328,5 +329,6 @@ async def compare(common: Common = Depends(), runs: str = Form(...)):
     return _json(await _compute(_run_compare, common, specs))
 
 
+api.include_router(screener.router)  # inherits the session requirement
 app.include_router(auth.router)
 app.include_router(api)

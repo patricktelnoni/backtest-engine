@@ -1,0 +1,109 @@
+# IDX symbols screened by screener.py, one per line (Yahoo Finance suffix .JK is added automatically).
+# Lines starting with # are ignored. Edit freely; a symbol that fails to download is reported, not fatal.
+# Override the file with BT_SCREENER_UNIVERSE=/path/to/list.txt
+# -- banks
+BBCA
+BBRI
+BMRI
+BBNI
+BBTN
+BRIS
+BTPS
+BNGA
+PNBN
+NISP
+MEGA
+BJBR
+BJTM
+ARTO
+BBYB
+BFIN
+ADMF
+# -- telco, tech, media
+TLKM
+EXCL
+ISAT
+TOWR
+TBIG
+MTEL
+GOTO
+BUKA
+EMTK
+SCMA
+MNCN
+# -- consumer
+UNVR
+ICBP
+INDF
+MYOR
+KLBF
+SIDO
+KAEF
+CPIN
+JPFA
+GGRM
+HMSP
+AMRT
+MAPI
+ACES
+ERAA
+ULTJ
+CMRY
+ROTI
+MLBI
+MIKA
+HEAL
+SILO
+# -- energy, mining, metals
+ADRO
+PTBA
+ITMG
+HRUM
+BUMI
+INDY
+MEDC
+PGAS
+AKRA
+ELSA
+ANTM
+MDKA
+INCO
+TINS
+BRMS
+MBMA
+NCKL
+ESSA
+# -- industrials, autos, infrastructure
+ASII
+UNTR
+AUTO
+SMSM
+DRMA
+JSMR
+WIKA
+PTPP
+ADHI
+SMGR
+INTP
+BRPT
+TPIA
+INKP
+TKIM
+ASSA
+BIRD
+SMDR
+TMAS
+# -- property
+BSDE
+CTRA
+PWON
+SMRA
+LPKR
+PANI
+# -- agri
+AALI
+LSIP
+DSNG
+SSMS
+# -- holding
+SRTG

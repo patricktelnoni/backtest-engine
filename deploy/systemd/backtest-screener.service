@@ -1,0 +1,36 @@
+# /etc/systemd/system/backtest-screener.service  -- started by backtest-screener.timer (or by hand:
+#   sudo systemctl start backtest-screener.service ; journalctl -u backtest-screener -n 50)
+# Refreshes the cached IDX OHLCV data (~100 small requests to Yahoo Finance) and rewrites
+# /var/lib/backtest/screener/idx_bullish_divergence.json, which the API serves at GET /api/screener.
+[Unit]
+Description=Backtest Platform IDX screener (daily data refresh + scan)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=backtest
+Group=backtest
+WorkingDirectory=/opt/backtest-platform/api
+StateDirectory=backtest
+StateDirectoryMode=0700
+UMask=0077
+Environment=BT_SCREENER_DIR=/var/lib/backtest/screener
+ExecStart=/opt/backtest-platform/.venv/bin/python screener.py
+TimeoutStartSec=20min
+# Background work on a shared VPS: lowest CPU and I/O priority.
+Nice=15
+IOSchedulingClass=idle
+
+# Hardening (same as the API; outbound network is needed for the data download)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
