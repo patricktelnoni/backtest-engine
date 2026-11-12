@@ -120,7 +120,7 @@ def test_rows_carry_plan_and_chart():
     (r,) = out["setups"]["bullish_divergence"]["results"]
     assert r["plan"] is not None and r["plan"]["stop_loss"] < r["stop"] < r["plan"]["entry"] < r["plan"]["tp1"] < r["plan"]["tp2"]
     c = r["chart"]
-    assert len(c["t"]) == len(c["close"]) == len(c["series"]["rsi"]) == 40 and c["t"][-1] == r["last_date"]
+    assert len(c["t"]) == len(c["open"]) == len(c["close"]) == len(c["series"]["rsi"]) == 40 and c["t"][-1] == r["last_date"]
     # an exited setup has no plan
     out = screen({"DIV": make_df(_div_closes())}, {"bullish_divergence": {"max_hold": 5}}, recent_bars=100, min_bars=50)
     assert out["setups"]["bullish_divergence"]["results"][0]["plan"] is None

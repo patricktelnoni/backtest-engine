@@ -78,6 +78,7 @@ export interface TradePlan {
 }
 export interface ChartData {
   t: string[];
+  open: number[];
   close: number[];
   high: number[];
   low: number[];

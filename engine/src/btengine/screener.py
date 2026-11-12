@@ -110,6 +110,7 @@ def _chart(df: pd.DataFrame, strat, bars: int) -> dict:
     tail = df.iloc[-bars:]
     out = {
         "t": [d.strftime("%Y-%m-%d") for d in tail.index],
+        "open": [round(float(v), 4) for v in tail["open"]],
         "close": [round(float(v), 4) for v in tail["close"]],
         "high": [round(float(v), 4) for v in tail["high"]],
         "low": [round(float(v), 4) for v in tail["low"]],
