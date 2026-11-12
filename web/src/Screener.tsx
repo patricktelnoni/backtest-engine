@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
+
+const PAGE_SIZES = [10, 25, 50, 100] as const;
 import ScreenerChart from "./ScreenerChart";
 import { getScreener } from "./api";
 import { pct, price } from "./format";
@@ -118,6 +120,11 @@ export default function Screener() {
   const [setup, setSetup] = useState<string>("bullish_divergence");
   const [activeOnly, setActiveOnly] = useState(true);
   const [open, setOpen] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  // Back to the first page whenever the visible set changes.
+  useEffect(() => { setPage(1); setOpen(null); }, [setup, activeOnly, pageSize]);
 
   useEffect(() => {
     getScreener().then((d) => {
@@ -153,6 +160,11 @@ export default function Screener() {
   const active = cur.results.filter((r) => r.status === "active").length;
   const params = Object.entries(cur.params).map(([k, v]) => `${k}=${String(v)}`).join(" · ");
   const years = Math.round((cur.results[0]?.history.bars ?? 0) / 245);
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const current = Math.min(page, pages);
+  const start = (current - 1) * pageSize;
+  const shown = rows.slice(start, start + pageSize);
+  const goTo = (n: number) => { setPage(Math.min(pages, Math.max(1, n))); setOpen(null); };
 
   return (
     <div className="page">
@@ -200,13 +212,31 @@ export default function Screener() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {shown.map((r) => (
                   <Row key={r.ticker} r={r} setup={setup} open={open === r.ticker}
                     onToggle={() => setOpen(open === r.ticker ? null : r.ticker)} />
                 ))}
               </tbody>
             </table>
           </div>
+        )}
+        {rows.length > PAGE_SIZES[0] && (
+          <nav className="pager" aria-label="Halaman tabel">
+            <span className="muted">{start + 1}–{start + shown.length} dari {rows.length}</span>
+            <label className="check">
+              per halaman
+              <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+                {PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <div className="pager-buttons">
+              <button type="button" className="ghost" onClick={() => goTo(1)} disabled={current === 1} aria-label="Halaman pertama">«</button>
+              <button type="button" className="ghost" onClick={() => goTo(current - 1)} disabled={current === 1} aria-label="Sebelumnya">‹</button>
+              <span>hal. {current} / {pages}</span>
+              <button type="button" className="ghost" onClick={() => goTo(current + 1)} disabled={current === pages} aria-label="Berikutnya">›</button>
+              <button type="button" className="ghost" onClick={() => goTo(pages)} disabled={current === pages} aria-label="Halaman terakhir">»</button>
+            </div>
+          </nav>
         )}
         <p className="hint">
           Klik baris untuk melihat chart 120 bar terakhir dengan area entry, stop loss, dan target. Stop ({meta.stopLabel}) ada di kolom

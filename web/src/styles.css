@@ -275,3 +275,12 @@ table.screener tr.open td { background: var(--accent-soft); }
 table.screener .chev { display: inline-block; width: 14px; color: var(--text-2); font-size: 11px; }
 table.screener tr.expanded td { background: color-mix(in srgb, var(--page) 55%, var(--surface)); padding: 14px 16px 10px; white-space: normal; }
 .screener-chart .legend { margin-bottom: 6px; }
+
+/* screener pagination */
+.pager { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 0 2px; font-size: 13px; }
+.pager .check select { margin-left: 6px; width: auto; padding: 4px 8px; }
+.pager-buttons { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.pager-buttons button.ghost { padding: 4px 10px; min-width: 34px; }
+.pager-buttons button.ghost:hover:not(:disabled) { color: var(--text); border-color: var(--text-2); }
+.pager-buttons button:disabled { opacity: .4; cursor: default; }
+.pager-buttons span { padding: 0 6px; white-space: nowrap; }
