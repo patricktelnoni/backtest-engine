@@ -82,6 +82,8 @@ export interface ChartData {
   close: number[];
   high: number[];
   low: number[];
+  /** Shares traded per bar; absent in result files written before volume was added. */
+  volume?: (number | null)[];
   /** Indicator series aligned with `t`: ema10..ema200 for consolidated_ma, rsi for bullish_divergence. */
   series: Record<string, (number | null)[]>;
 }

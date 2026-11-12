@@ -116,6 +116,8 @@ def _chart(df: pd.DataFrame, strat, bars: int) -> dict:
         "low": [round(float(v), 4) for v in tail["low"]],
         "series": {name: [_num(round(float(v), 4)) for v in ser.iloc[-bars:]] for name, ser in ind.items()},
     }
+    if "volume" in tail:
+        out["volume"] = [_num(float(v)) for v in tail["volume"]]
     return out
 
 

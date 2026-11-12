@@ -270,7 +270,7 @@ table.screener th.left, table.screener td.left { text-align: left; }
 
 /* Screener: table and chart side by side; clicking a row loads that ticker into the chart */
 .page { max-width: 1920px; }
-.screener-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(420px, 44%); gap: 16px; align-items: start; }
+.screener-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(460px, 50%); gap: 16px; align-items: start; }
 .screener-split.solo { grid-template-columns: minmax(0, 1fr); }
 .chart-panel { position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; scroll-margin-top: 72px; }
 .chart-panel .card-head h3 .muted { font-weight: 400; font-size: 13px; }

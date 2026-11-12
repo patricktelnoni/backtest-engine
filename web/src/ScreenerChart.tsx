@@ -11,6 +11,16 @@ const UP = "var(--good)", DOWN = "var(--bad)";
 
 type Candle = { t: string; open: number; high: number; low: number; close: number; range: [number, number] } & Record<string, unknown>;
 
+const compact = (v: number) => v.toLocaleString("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+/** Volume bar tinted like its candle. */
+function VolumeShape(props: { x?: number; y?: number; width?: number; height?: number; payload?: Candle }) {
+  const { x = 0, y = 0, width = 0, height = 0, payload } = props;
+  if (!payload || !Number.isFinite(y) || height <= 0) return <g />;
+  const bodyW = Math.max(2, width * 0.7);
+  return <rect x={x + (width - bodyW) / 2} y={y} width={bodyW} height={height} fill={payload.close >= payload.open ? UP : DOWN} fillOpacity={0.55} />;
+}
+
 /** Recharts has no candlestick: draw one inside a Bar whose value is [low, high]. The bar's pixel box maps
  *  high -> y and low -> y + height, so open/close are placed by linear interpolation; no access to scales needed. */
 function CandleShape(props: { x?: number; y?: number; width?: number; height?: number; payload?: Candle }) {
@@ -45,6 +55,7 @@ function CandleTooltip({ active, payload, label, emaKeys }: {
       {(["open", "high", "low", "close"] as const).map((k) => (
         <div key={k} className="tip-row"><span className="tip-name">{k[0].toUpperCase()}</span><span className="tip-val">{price(c[k])}</span></div>
       ))}
+      {c.volume != null && <div className="tip-row"><span className="tip-name">Vol</span><span className="tip-val">{compact(Number(c.volume))}</span></div>}
       <div className="tip-row"><span className="tip-name">chg</span><span className={`tip-val ${chg >= 0 ? "pos" : "neg"}`}>{(chg * 100).toFixed(2)}%</span></div>
       {emaKeys.map((k, i) => c[k] != null && (
         <div key={k} className="tip-row">
@@ -66,6 +77,7 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
     const row: Candle = { t, open: c.open[i], high: c.high[i], low: c.low[i], close: c.close[i], range: [c.low[i], c.high[i]] };
     for (const k of emaKeys) row[k] = c.series[k][i];
     if (rsi) row.rsi = rsi[i];
+    if (c.volume) row.volume = c.volume[i];
     return row;
   });
   const p = r.plan;
@@ -74,18 +86,20 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
   const finite = values.filter((v) => Number.isFinite(v));
   const lo = Math.min(...finite), hi = Math.max(...finite), pad = (hi - lo) * 0.04;
   const fmtAxis = axisFormatter(hi);
+  const hasVolume = !!c.volume?.some((v) => v != null && v > 0);
   const inWindow = (d: string) => c.t.includes(d);
   const d = r.detail;
   const legend = [
     { label: "Candle (naik kosong, turun isi)", color: "var(--text-2)" },
     ...emaKeys.map((k, i) => ({ label: EMA_LABEL[k] ?? k, color: seriesColor(i + 1) })),
+    ...(hasVolume ? [{ label: "Volume", color: "var(--muted)" }] : []),
     ...(p ? [{ label: "Area entry", color: PLAN.entry }, { label: "Stop loss", color: PLAN.stop, dashed: true }, { label: "TP 2R / 3R", color: PLAN.tp, dashed: true }] : []),
   ];
 
   return (
     <div className="screener-chart">
       <ChartLegend items={legend} />
-      <ResponsiveContainer width="100%" height={320}>
+      <ResponsiveContainer width="100%" height={400}>
         <ComposedChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barCategoryGap="20%">
           <CartesianGrid {...GRID} />
           <XAxis dataKey="t" {...X_AXIS} />
@@ -109,8 +123,19 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
           )}
         </ComposedChart>
       </ResponsiveContainer>
+      {hasVolume && (
+        <ResponsiveContainer width="100%" height={100}>
+          <ComposedChart data={rows} margin={{ top: 4, right: 12, left: 0, bottom: 0 }} barCategoryGap="20%">
+            <CartesianGrid {...GRID} />
+            <XAxis dataKey="t" {...X_AXIS} hide />
+            <YAxis {...Y_AXIS} width={64} tickCount={3} tickFormatter={compact} />
+            <Tooltip content={<ChartTooltip format={compact} />} cursor={CURSOR} />
+            <Bar dataKey="volume" name="Volume" shape={<VolumeShape />} isAnimationActive={false} />
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
       {rsi && (
-        <ResponsiveContainer width="100%" height={110}>
+        <ResponsiveContainer width="100%" height={130}>
           <ComposedChart data={rows} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid {...GRID} />
             <XAxis dataKey="t" {...X_AXIS} hide />
