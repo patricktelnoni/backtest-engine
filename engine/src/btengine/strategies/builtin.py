@@ -166,6 +166,9 @@ class BullishDivergence(Strategy):
         """Every divergence setup in `df`, in order; the last one has exit_bar None if still open."""
         return self._run(df)[1]
 
+    def indicators(self, df):
+        return {"rsi": _rsi(df["close"], self.params.rsi_period)}
+
 
 EMA_PERIODS = (10, 20, 50, 100, 200)
 
@@ -236,3 +239,6 @@ class ConsolidatedMa(Strategy):
 
     def scan(self, df) -> list[dict]:
         return self._run(df)[1]
+
+    def indicators(self, df):
+        return {f"ema{k}": df["close"].ewm(span=k, adjust=False).mean() for k in EMA_PERIODS}

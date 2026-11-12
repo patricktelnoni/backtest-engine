@@ -27,3 +27,7 @@ class Strategy(ABC):
 
     @abstractmethod
     def signals(self, df: pd.DataFrame) -> pd.Series: ...
+
+    def indicators(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+        """Indicator series worth drawing next to price (for screener charts). Default: none."""
+        return {}

@@ -86,3 +86,47 @@ def test_consolidated_ma_exits_on_stop_and_max_hold():
     assert (s["exit_bar"], s["exit_reason"]) == (265, "stop")
     (s,) = get_strategy("consolidated_ma", use_stop=False, max_hold=10).scan(crash)
     assert (s["exit_bar"], s["exit_reason"]) == (270, "max_hold")
+
+
+# ---------- trade plan & chart ----------
+
+def test_idx_tick_and_snap():
+    from btengine.screener import idx_tick, _snap
+    assert [idx_tick(p) for p in (150, 250, 1000, 3000, 9000)] == [1, 2, 5, 10, 25]
+    assert _snap(1003, "idx_stock") == 1005 and _snap(1003, "idx_stock", "down") == 1000 and _snap(1001, "idx_stock", "up") == 1005
+    assert _snap(1.23456, "crypto") == 1.2346
+
+
+def test_trade_plan_rr_2_and_3_on_ticks():
+    from btengine.screener import trade_plan
+    p = trade_plan(last_close=2460, signal_price=2400, stop=2280, market="idx_stock")
+    assert p["stop_loss"] == 2260                                  # 2280 * 0.995 = 2268.6 -> down to tick 10
+    assert p["entry_low"] == 2400 and p["entry_high"] == 2460 and p["entry"] == 2430
+    risk = p["entry"] - p["stop_loss"]
+    assert p["tp1"] >= p["entry"] + 2 * risk and p["tp1"] < p["entry"] + 2 * risk + 10
+    assert p["tp2"] >= p["entry"] + 3 * risk and p["tp2"] % 10 == 0
+    assert p["risk_pct"] == pytest.approx(risk / 2430) and p["rr_targets"] == [2.0, 3.0]
+    assert p["rr_at_last"] == pytest.approx((p["tp1"] - 2460) / (2460 - 2260))
+    # price fell to the stop: no plan
+    assert trade_plan(2250, 2400, 2280, "idx_stock") is None
+    # price below the signal but above the stop: area is [close, signal]
+    q = trade_plan(2350, 2400, 2280, "idx_stock")
+    assert (q["entry_low"], q["entry_high"]) == (2350, 2400)
+
+
+def test_rows_carry_plan_and_chart():
+    open_setup = make_df(_div_closes()[:72])
+    out = screen({"OPEN": open_setup}, {"bullish_divergence": {}, "consolidated_ma": {}}, min_bars=50, chart_bars=40)
+    (r,) = out["setups"]["bullish_divergence"]["results"]
+    assert r["plan"] is not None and r["plan"]["stop_loss"] < r["stop"] < r["plan"]["entry"] < r["plan"]["tp1"] < r["plan"]["tp2"]
+    c = r["chart"]
+    assert len(c["t"]) == len(c["close"]) == len(c["series"]["rsi"]) == 40 and c["t"][-1] == r["last_date"]
+    # an exited setup has no plan
+    out = screen({"DIV": make_df(_div_closes())}, {"bullish_divergence": {"max_hold": 5}}, recent_bars=100, min_bars=50)
+    assert out["setups"]["bullish_divergence"]["results"][0]["plan"] is None
+    # consolidated_ma charts carry the five EMAs
+    df = make_df(np.linspace(100, 150, 300))
+    out = screen({"X": df}, {"consolidated_ma": {}})
+    assert out["setups"]["consolidated_ma"]["results"] == []  # no setup, but indicators are exercised via strategy
+    from btengine.strategies import get_strategy
+    assert set(get_strategy("consolidated_ma").indicators(df)) == {"ema10", "ema20", "ema50", "ema100", "ema200"}

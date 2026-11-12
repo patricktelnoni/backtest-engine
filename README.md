@@ -57,7 +57,11 @@ A scheduled job, not a request handler: [api/screener.py](api/screener.py) downl
 every symbol in [api/idx_universe.txt](api/idx_universe.txt) (Yahoo Finance, incremental, cached as CSV), runs
 every setup in `btengine.screener.SETUPS` on each, and writes one JSON file. `GET /api/screener` serves that
 file (one `stat()` per request); the **Screener** tab in the UI has one sub-tab per setup with open setups,
-recently closed ones, the stop, setup-specific details and how the same setup did historically on that symbol.
+recently closed ones, setup-specific details, how the same setup did historically on that symbol, and for every
+open setup a **trade plan**: entry area (between the signal close and the current close, never under the stop),
+stop loss (the setup's invalidation level minus 0.5%), and take profits at 2R and 3R, all snapped to IDX price
+fractions. Clicking a row opens a 120-bar chart with the indicators (EMAs or RSI), the signal bar, the entry
+area, SL and TPs.
 
 | Setup | Rule (long only) |
 | --- | --- |

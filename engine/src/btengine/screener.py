@@ -18,6 +18,9 @@ from .strategies import get_strategy
 
 SETUPS = ("bullish_divergence", "consolidated_ma")
 MIN_BARS = 120
+CHART_BARS = 120
+STOP_BUFFER = 0.005      # stop loss sits 0.5% under the setup's invalidation level
+RR_TARGETS = (2.0, 3.0)  # take profits at 2R and 3R
 
 
 def _num(v):
@@ -43,7 +46,79 @@ def _detail(detail: dict, index) -> dict:
     return out
 
 
-def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int) -> dict | None:
+def idx_tick(price: float) -> float:
+    """IDX price fraction (tick size) for a given price level."""
+    if price < 200:
+        return 1.0
+    if price < 500:
+        return 2.0
+    if price < 2000:
+        return 5.0
+    if price < 5000:
+        return 10.0
+    return 25.0
+
+
+def _tick(price: float, market) -> float | None:
+    return idx_tick(price) if Market(market) == Market.IDX_STOCK else None
+
+
+def _snap(price: float, market, mode: str = "nearest") -> float:
+    """Round to a valid tick (IDX) or to 4 decimals (other markets)."""
+    tick = _tick(price, market)
+    if tick is None:
+        return round(price, 4)
+    q = price / tick
+    n = math.floor(q) if mode == "down" else math.ceil(q) if mode == "up" else round(q)
+    return float(n * tick)
+
+
+def trade_plan(last_close: float, signal_price: float, stop: float, market) -> dict | None:
+    """Entry area, stop loss and 2R/3R targets. The entry area spans the signal close and the current close
+    (whichever order), never below the stop; R is measured from the middle of that area. None when the
+    setup is already invalid (price at or under the stop)."""
+    stop_loss = _snap(stop * (1 - STOP_BUFFER), market, "down")
+    if last_close <= stop_loss:
+        return None
+    tick = _tick(stop_loss, market) or 0.0
+    low = max(min(last_close, signal_price), stop_loss + tick)
+    high = max(last_close, signal_price, low)
+    entry = _snap((low + high) / 2, market)
+    risk = entry - stop_loss
+    if risk <= 0:
+        return None
+    targets = [_snap(entry + rr * risk, market, "up") for rr in RR_TARGETS]
+    return {
+        "entry_low": _snap(low, market, "down"),
+        "entry_high": _snap(high, market, "up"),
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "risk_pct": risk / entry,
+        "tp1": targets[0],
+        "tp2": targets[1],
+        "tp1_pct": targets[0] / entry - 1,
+        "tp2_pct": targets[1] / entry - 1,
+        "rr_targets": list(RR_TARGETS),
+        # reward:risk if one bought at the current close instead of the planned entry
+        "rr_at_last": (targets[0] - last_close) / (last_close - stop_loss),
+    }
+
+
+def _chart(df: pd.DataFrame, strat, bars: int) -> dict:
+    """Last `bars` bars of price plus the setup's indicator series, as plain lists for the UI."""
+    ind = strat.indicators(df)
+    tail = df.iloc[-bars:]
+    out = {
+        "t": [d.strftime("%Y-%m-%d") for d in tail.index],
+        "close": [round(float(v), 4) for v in tail["close"]],
+        "high": [round(float(v), 4) for v in tail["high"]],
+        "low": [round(float(v), 4) for v in tail["low"]],
+        "series": {name: [_num(round(float(v), 4)) for v in ser.iloc[-bars:]] for name, ser in ind.items()},
+    }
+    return out
+
+
+def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int, chart_bars: int = CHART_BARS) -> dict | None:
     """One result row, or None when the symbol has no live or recently closed setup."""
     setups = strat.scan(df)
     if not setups:
@@ -71,6 +146,8 @@ def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int) -> dict
         "exit_date": _date(idx, last["exit_bar"]) if last["exit_bar"] is not None else None,
         "exit_reason": last["exit_reason"],
         "detail": _detail(last.get("detail", {}), idx),
+        "plan": trade_plan(last_close, float(close[e]), last["stop"], market) if last["exit_bar"] is None else None,
+        "chart": _chart(df, strat, chart_bars),
         "history": {  # how this setup did on this symbol over the whole frame (same params, market costs)
             "bars": n,
             "n_trades": m["n_trades"],
@@ -83,7 +160,8 @@ def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int) -> dict
 
 
 def screen(frames: dict[str, pd.DataFrame], setups: dict[str, dict | None] | None = None,
-           market: Market | str = Market.IDX_STOCK, recent_bars: int = 10, min_bars: int = MIN_BARS) -> dict:
+           market: Market | str = Market.IDX_STOCK, recent_bars: int = 10, min_bars: int = MIN_BARS,
+           chart_bars: int = CHART_BARS) -> dict:
     """Scan every frame with every setup; a symbol is listed under a setup when it has an open one or one
     that closed within `recent_bars`. Rows are sorted: open first, newest signal first. Symbols that cannot
     be scanned are listed under `errors` instead of aborting the scan.
@@ -99,7 +177,7 @@ def screen(frames: dict[str, pd.DataFrame], setups: dict[str, dict | None] | Non
             df = validate_ohlcv(df)
             if len(df) < min_bars:
                 raise ValueError(f"only {len(df)} bars, need at least {min_bars}")
-            rows = {name: _row(ticker, df, s, market, recent_bars) for name, s in strats.items()}
+            rows = {name: _row(ticker, df, s, market, recent_bars, chart_bars) for name, s in strats.items()}
         except (ValueError, KeyError) as e:
             errors.append({"ticker": ticker, "error": str(e)})
             continue

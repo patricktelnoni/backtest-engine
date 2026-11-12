@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import ScreenerChart from "./ScreenerChart";
 import { getScreener } from "./api";
 import { pct, price } from "./format";
 import type { ScreenerResponse, ScreenerRow } from "./types";
@@ -12,6 +13,7 @@ const SETUPS: Record<string, { title: string; rule: string; stopLabel: string; d
     rule: "Harga membuat swing low lebih rendah sementara RSI membuat low lebih tinggi. Sinyal saat pivot kedua terkonfirmasi; stop = low divergence.",
     stopLabel: "low divergence",
     detail: {
+      stop: ["Stop", (v) => price(Number(v))],
       first_low_date: ["Low 1", String], first_low: ["harga", (v) => price(Number(v))], rsi_first: ["RSI", (v) => Number(v).toFixed(1)],
       second_low_date: ["Low 2", String], second_low: ["harga", (v) => price(Number(v))], rsi_second: ["RSI", (v) => Number(v).toFixed(1)],
     },
@@ -21,6 +23,7 @@ const SETUPS: Record<string, { title: string; rule: string; stopLabel: string; d
     rule: "EMA 10/20/50/100/200 merapat (rentang ≤ tightness_pct dari close) selama ≥ min_squeeze_bars bar, lalu close menembus di atas EMA tertinggi dengan volume ≥ volume_mult × rata-rata. Stop = EMA terendah saat sinyal.",
     stopLabel: "EMA terendah",
     detail: {
+      stop: ["Stop", (v) => price(Number(v))],
       squeeze_start_date: ["Rapat sejak", String], squeeze_bars: ["bar", String],
       spread_pct: ["Rentang EMA", (v) => `${Number(v).toFixed(2)}%`], volume_ratio: ["Volume", (v) => `${Number(v).toFixed(1)}×`],
       ema_top: ["EMA atas", (v) => price(Number(v))], ema_bottom: ["EMA bawah", (v) => price(Number(v))],
@@ -43,10 +46,10 @@ function Signed({ v }: { v: number }) {
 
 function Detail({ r, setup }: { r: ScreenerRow; setup: string }) {
   const spec = SETUPS[setup]?.detail ?? {};
-  // Group pairs like (first_low_date, first_low, rsi_first) onto one line by rendering "label value" chips in order.
+  const entries: [string, number | string | null][] = [["stop", r.stop], ...Object.entries(r.detail)];
   return (
     <div className="detail">
-      {Object.entries(r.detail).map(([k, v]) => {
+      {entries.map(([k, v]) => {
         const [label, fmt] = spec[k] ?? [k, String];
         return <span key={k}><em>{label}</em> {v === null ? "n/a" : fmt(v)}</span>;
       })}
@@ -54,21 +57,53 @@ function Detail({ r, setup }: { r: ScreenerRow; setup: string }) {
   );
 }
 
-function Row({ r, setup }: { r: ScreenerRow; setup: string }) {
+function Plan({ r }: { r: ScreenerRow }) {
+  const p = r.plan;
+  if (!p) return <td colSpan={3} className="muted left">{r.status === "active" ? "harga sudah di bawah stop" : "–"}</td>;
+  return (
+    <>
+      <td>
+        {price(p.entry_low)} – {price(p.entry_high)}
+        <span className="sub">risiko {(p.risk_pct * 100).toFixed(1)}% · RR di harga kini {p.rr_at_last.toFixed(1)}</span>
+      </td>
+      <td className="neg">{price(p.stop_loss)}</td>
+      <td className="pos">
+        {price(p.tp1)} <span className="muted">({p.rr_targets[0]}R, +{(p.tp1_pct * 100).toFixed(1)}%)</span>
+        <span className="sub">TP2 {price(p.tp2)} ({p.rr_targets[1]}R, +{(p.tp2_pct * 100).toFixed(1)}%)</span>
+      </td>
+    </>
+  );
+}
+
+function Row({ r, setup, open, onToggle }: { r: ScreenerRow; setup: string; open: boolean; onToggle: () => void }) {
   const h = r.history;
   const hist = h.n_trades
     ? `${h.n_trades} trade · win ${h.win_rate === null ? "n/a" : `${(h.win_rate * 100).toFixed(0)}%`} · avg ${h.avg_trade_return === null ? "n/a" : pct(h.avg_trade_return, 1)}`
     : "belum ada trade";
   return (
-    <tr>
-      <td><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
-      <td><Status r={r} /></td>
-      <td>{r.signal_date}<span className="sub">{price(r.signal_price)}</span></td>
-      <td>{price(r.last_close)}<span className="sub"><Signed v={r.return_since_signal} /> sejak sinyal</span></td>
-      <td>{price(r.stop)}<span className="sub"><Signed v={r.stop_distance} /> ke stop</span></td>
-      <td className="left"><Detail r={r} setup={setup} /></td>
-      <td className="muted">{hist}</td>
-    </tr>
+    <Fragment>
+      <tr className={`clickable${open ? " open" : ""}`} onClick={onToggle} aria-expanded={open}>
+        <td><span className="chev" aria-hidden="true">{open ? "▾" : "▸"}</span><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
+        <td><Status r={r} /></td>
+        <td>{r.signal_date}<span className="sub">{price(r.signal_price)}</span></td>
+        <td>{price(r.last_close)}<span className="sub"><Signed v={r.return_since_signal} /> sejak sinyal</span></td>
+        <Plan r={r} />
+        <td className="left"><Detail r={r} setup={setup} /></td>
+        <td className="muted">{hist}</td>
+      </tr>
+      {open && (
+        <tr className="expanded">
+          <td colSpan={9}>
+            <ScreenerChart r={r} />
+            <p className="hint">
+              Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
+              Stop loss = {setup === "consolidated_ma" ? "EMA terendah saat sinyal" : "low divergence"} dikurangi 0,5%, dibulatkan ke fraksi harga.
+              TP1 = entry + 2R, TP2 = entry + 3R. Bukan rekomendasi.
+            </p>
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 
@@ -78,6 +113,7 @@ export default function Screener() {
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<string>("bullish_divergence");
   const [activeOnly, setActiveOnly] = useState(true);
+  const [open, setOpen] = useState<string | null>(null);
 
   useEffect(() => {
     getScreener().then((d) => {
@@ -154,16 +190,23 @@ export default function Screener() {
             <table className="screener">
               <thead>
                 <tr>
-                  <th>Saham</th><th>Status</th><th>Sinyal</th><th>Harga terakhir</th><th>Stop ({meta.stopLabel})</th>
+                  <th>Saham</th><th>Status</th><th>Sinyal</th><th>Harga terakhir</th>
+                  <th>Area entry</th><th>Stop loss</th><th>Take profit</th>
                   <th className="left">Detail setup</th><th>Histori setup ini</th>
                 </tr>
               </thead>
-              <tbody>{rows.map((r) => <Row key={r.ticker} r={r} setup={setup} />)}</tbody>
+              <tbody>
+                {rows.map((r) => (
+                  <Row key={r.ticker} r={r} setup={setup} open={open === r.ticker}
+                    onToggle={() => setOpen(open === r.ticker ? null : r.ticker)} />
+                ))}
+              </tbody>
             </table>
           </div>
         )}
         <p className="hint">
-          Harga sinyal = close bar sinyal. Histori = hasil setup yang sama pada saham itu selama {years} tahun data
+          Klik baris untuk melihat chart 120 bar terakhir dengan area entry, stop loss, dan target. Stop ({meta.stopLabel}) ada di kolom
+          detail setup. Harga sinyal = close bar sinyal. Histori = hasil setup yang sama pada saham itu selama {years} tahun data
           (biaya idx_stock). Bukan rekomendasi; uji dulu di tab Backtest.
         </p>
       </section>

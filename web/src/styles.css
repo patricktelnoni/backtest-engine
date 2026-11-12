@@ -267,3 +267,11 @@ table.screener th.left, table.screener td.left { text-align: left; }
 [hidden] { display: none !important; }
 /* Screener: the table is the page, so let it grow with its rows (only horizontal scroll on narrow screens). */
 .page .scroll { max-height: none; overflow-y: visible; }
+
+/* Screener rows expand into a chart */
+table.screener tr.clickable { cursor: pointer; }
+table.screener tr.clickable:hover td { background: var(--row-hover); }
+table.screener tr.open td { background: var(--accent-soft); }
+table.screener .chev { display: inline-block; width: 14px; color: var(--text-2); font-size: 11px; }
+table.screener tr.expanded td { background: color-mix(in srgb, var(--page) 55%, var(--surface)); padding: 14px 16px 10px; white-space: normal; }
+.screener-chart .legend { margin-bottom: 6px; }

@@ -63,6 +63,27 @@ export interface CompareResponse {
   bars: number;
 }
 
+export interface TradePlan {
+  entry_low: number;
+  entry_high: number;
+  entry: number;
+  stop_loss: number;
+  risk_pct: number;
+  tp1: number;
+  tp2: number;
+  tp1_pct: number;
+  tp2_pct: number;
+  rr_targets: number[];
+  rr_at_last: number;
+}
+export interface ChartData {
+  t: string[];
+  close: number[];
+  high: number[];
+  low: number[];
+  /** Indicator series aligned with `t`: ema10..ema200 for consolidated_ma, rsi for bullish_divergence. */
+  series: Record<string, (number | null)[]>;
+}
 export interface ScreenerRow {
   ticker: string;
   status: "active" | "exited";
@@ -78,6 +99,9 @@ export interface ScreenerRow {
   exit_reason: string | null;
   /** Setup-specific facts (dates, prices, ratios), keys differ per setup. */
   detail: Record<string, number | string | null>;
+  /** Entry area, stop loss and 2R/3R targets; null for closed setups or when price is already under the stop. */
+  plan: TradePlan | null;
+  chart: ChartData;
   history: {
     bars: number; n_trades: number; win_rate: number | null; profit_factor: number | null;
     avg_trade_return: number | null; total_return: number | null;
