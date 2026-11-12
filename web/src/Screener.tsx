@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const PAGE_SIZES = [10, 25, 50, 100] as const;
+import ErrorBoundary from "./ErrorBoundary";
 import ScreenerChart from "./ScreenerChart";
 import { getScreener } from "./api";
 import { pct, price } from "./format";
@@ -78,38 +79,45 @@ function Plan({ r }: { r: ScreenerRow }) {
   );
 }
 
-function Row({ r, setup, open, onToggle }: { r: ScreenerRow; setup: string; open: boolean; onToggle: () => void }) {
+function Row({ r, setup, selected, onSelect }: { r: ScreenerRow; setup: string; selected: boolean; onSelect: () => void }) {
   const h = r.history;
   const hist = h.n_trades
     ? `${h.n_trades} trade · win ${h.win_rate === null ? "n/a" : `${(h.win_rate * 100).toFixed(0)}%`} · avg ${h.avg_trade_return === null ? "n/a" : pct(h.avg_trade_return, 1)}`
     : "belum ada trade";
   return (
-    <Fragment>
-      <tr className={`clickable${open ? " open" : ""}`} onClick={onToggle} aria-expanded={open}>
-        <td><span className="chev" aria-hidden="true">{open ? "▾" : "▸"}</span><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
-        <td><Status r={r} /></td>
-        <td>{r.signal_date}<span className="sub">{price(r.signal_price)}</span></td>
-        <td>{price(r.last_close)}<span className="sub"><Signed v={r.return_since_signal} /> sejak sinyal</span></td>
-        <Plan r={r} />
-        <td className="left"><Detail r={r} setup={setup} /></td>
-        <td className="muted">{hist}</td>
-      </tr>
-      {open && (
-        <tr className="expanded">
-          <td colSpan={9}>
-            {r.chart ? <ScreenerChart r={r} /> : (
-              <p className="muted">Data chart belum ada: hasil ini dibuat oleh versi screener lama. Chart dan trade plan muncul setelah job
-                screener berikutnya (atau <code>sudo systemctl start backtest-screener.service</code>).</p>
-            )}
-            <p className="hint">
-              Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
-              Stop loss = {setup === "consolidated_ma" ? "EMA terendah saat sinyal" : "low divergence"} dikurangi 0,5%, dibulatkan ke fraksi harga.
-              TP1 = entry + 2R, TP2 = entry + 3R. Bukan rekomendasi.
-            </p>
-          </td>
-        </tr>
+    <tr className={`clickable${selected ? " open" : ""}`} onClick={onSelect} aria-selected={selected} tabIndex={0}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(); } }}>
+      <td><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
+      <td><Status r={r} /></td>
+      <td>{r.signal_date}<span className="sub">{price(r.signal_price)}</span></td>
+      <td>{price(r.last_close)}<span className="sub"><Signed v={r.return_since_signal} /> sejak sinyal</span></td>
+      <Plan r={r} />
+      <td className="left"><Detail r={r} setup={setup} /></td>
+      <td className="muted">{hist}</td>
+    </tr>
+  );
+}
+
+/** The chart that sits beside the table and follows the selected row. */
+function ChartPanel({ r, setup }: { r: ScreenerRow; setup: string }) {
+  return (
+    <>
+      <header className="card-head">
+        <div>
+          <h3>{r.ticker} <span className="muted">· {price(r.last_close)} (<Signed v={r.return_since_signal} /> sejak sinyal)</span></h3>
+        </div>
+        <Status r={r} />
+      </header>
+      {r.chart ? <ScreenerChart key={r.ticker} r={r} /> : (
+        <p className="muted">Data chart belum ada: hasil ini dibuat oleh versi screener lama. Chart dan trade plan muncul setelah job
+          screener berikutnya (atau <code>sudo systemctl start backtest-screener.service</code>).</p>
       )}
-    </Fragment>
+      <p className="hint">
+        Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
+        Stop loss = {setup === "consolidated_ma" ? "EMA terendah saat sinyal" : "low divergence"} dikurangi 0,5%, dibulatkan ke fraksi harga.
+        TP1 = entry + 2R, TP2 = entry + 3R. Bukan rekomendasi.
+      </p>
+    </>
   );
 }
 
@@ -119,12 +127,14 @@ export default function Screener() {
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<string>("bullish_divergence");
   const [activeOnly, setActiveOnly] = useState(true);
-  const [open, setOpen] = useState<string | null>(null);
+  // Ticker picked by the user; when it is not on the visible page the first row is charted instead.
+  const [picked, setPicked] = useState<string | null>(null);
+  const chartRef = useRef<HTMLElement>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(25);
 
   // Back to the first page whenever the visible set changes.
-  useEffect(() => { setPage(1); setOpen(null); }, [setup, activeOnly, pageSize]);
+  useEffect(() => { setPage(1); }, [setup, activeOnly, pageSize]);
 
   useEffect(() => {
     getScreener().then((d) => {
@@ -164,7 +174,13 @@ export default function Screener() {
   const current = Math.min(page, pages);
   const start = (current - 1) * pageSize;
   const shown = rows.slice(start, start + pageSize);
-  const goTo = (n: number) => { setPage(Math.min(pages, Math.max(1, n))); setOpen(null); };
+  const goTo = (n: number) => setPage(Math.min(pages, Math.max(1, n)));
+  const selected = shown.find((r) => r.ticker === picked) ?? shown[0];
+  const select = (ticker: string) => {
+    setPicked(ticker);
+    // Stacked layout (narrow screens): bring the chart into view. A no-op when it is already visible beside the table.
+    chartRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
 
   return (
     <div className="page">
@@ -189,6 +205,7 @@ export default function Screener() {
 
       <p className="hint">{meta.rule} Parameter: {params}.</p>
 
+      <div className={`screener-split${selected ? "" : " solo"}`}>
       <section className="card">
         <header className="card-head">
           <div>
@@ -213,8 +230,7 @@ export default function Screener() {
               </thead>
               <tbody>
                 {shown.map((r) => (
-                  <Row key={r.ticker} r={r} setup={setup} open={open === r.ticker}
-                    onToggle={() => setOpen(open === r.ticker ? null : r.ticker)} />
+                  <Row key={r.ticker} r={r} setup={setup} selected={r.ticker === selected?.ticker} onSelect={() => select(r.ticker)} />
                 ))}
               </tbody>
             </table>
@@ -239,11 +255,17 @@ export default function Screener() {
           </nav>
         )}
         <p className="hint">
-          Klik baris untuk melihat chart 120 bar terakhir dengan area entry, stop loss, dan target. Stop ({meta.stopLabel}) ada di kolom
+          Klik baris untuk memuat chart saham itu (120 bar terakhir dengan area entry, stop loss, dan target). Stop ({meta.stopLabel}) ada di kolom
           detail setup. Harga sinyal = close bar sinyal. Histori = hasil setup yang sama pada saham itu selama {years} tahun data
           (biaya idx_stock). Bukan rekomendasi; uji dulu di tab Backtest.
         </p>
       </section>
+      {selected && (
+        <section className="card chart-panel" ref={chartRef} aria-live="polite" aria-label={`Chart ${selected.ticker}`}>
+          <ErrorBoundary key={selected.ticker} label="chart"><ChartPanel r={selected} setup={setup} /></ErrorBoundary>
+        </section>
+      )}
+      </div>
 
       {data.errors.length > 0 && (
         <details className="table-view">
