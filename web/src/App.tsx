@@ -8,6 +8,7 @@ import Login from "./Login";
 import ConfigPanel, { MAX_RUNS, type Config, type RunCfg } from "./ConfigPanel";
 import Results from "./Results";
 import Screener from "./Screener";
+import ErrorBoundary from "./ErrorBoundary";
 import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
 
 type View = "backtest" | "screener";
@@ -167,7 +168,7 @@ export default function App() {
           <button type="button" className="ghost" onClick={signOut}>Keluar</button>
         </div>
       </header>
-      {view === "screener" ? <Screener /> : (
+      {view === "screener" ? <ErrorBoundary label="screener"><Screener /></ErrorBoundary> : (
       <div className="layout">
         <aside>
           {cfg && (

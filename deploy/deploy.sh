@@ -44,10 +44,10 @@ if [ "${code:-}" != "401" ]; then
   exit 1
 fi
 
-if [ ! -f /var/lib/backtest/screener/idx_screener.json ]; then
-  echo "==> first screener run (in the background; check: journalctl -u backtest-screener)"
-  sudo /usr/bin/systemctl start --no-block backtest-screener.service
-fi
+# Rebuild the screener result with the code just deployed (incremental data fetch, ~1 min, lowest priority),
+# so the UI never reads a result file written by an older version.
+echo "==> screener run (in the background; check: journalctl -u backtest-screener)"
+sudo /usr/bin/systemctl start --no-block backtest-screener.service
 
 echo "==> reload nginx"
 sudo /usr/sbin/nginx -t

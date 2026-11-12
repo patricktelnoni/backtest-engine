@@ -59,6 +59,7 @@ function Detail({ r, setup }: { r: ScreenerRow; setup: string }) {
 
 function Plan({ r }: { r: ScreenerRow }) {
   const p = r.plan;
+  if (p === undefined) return <td colSpan={3} className="muted left">belum dihitung (jalankan ulang screener)</td>;
   if (!p) return <td colSpan={3} className="muted left">{r.status === "active" ? "harga sudah di bawah stop" : "–"}</td>;
   return (
     <>
@@ -94,7 +95,10 @@ function Row({ r, setup, open, onToggle }: { r: ScreenerRow; setup: string; open
       {open && (
         <tr className="expanded">
           <td colSpan={9}>
-            <ScreenerChart r={r} />
+            {r.chart ? <ScreenerChart r={r} /> : (
+              <p className="muted">Data chart belum ada: hasil ini dibuat oleh versi screener lama. Chart dan trade plan muncul setelah job
+                screener berikutnya (atau <code>sudo systemctl start backtest-screener.service</code>).</p>
+            )}
             <p className="hint">
               Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
               Stop loss = {setup === "consolidated_ma" ? "EMA terendah saat sinyal" : "low divergence"} dikurangi 0,5%, dibulatkan ke fraksi harga.

@@ -59,7 +59,8 @@ function CandleTooltip({ active, payload, label, emaKeys }: {
 /** Candlesticks with the setup's overlays: indicator lines, signal bar, divergence lows, entry area, SL and TPs. */
 export default function ScreenerChart({ r }: { r: ScreenerRow }) {
   const c = r.chart;
-  const emaKeys = Object.keys(c.series).filter((k) => k.startsWith("ema"));
+  if (!c) return null;
+  const emaKeys = Object.keys(c.series ?? {}).filter((k) => k.startsWith("ema"));
   const rsi = c.series.rsi;
   const rows: Candle[] = c.t.map((t, i) => {
     const row: Candle = { t, open: c.open[i], high: c.high[i], low: c.low[i], close: c.close[i], range: [c.low[i], c.high[i]] };

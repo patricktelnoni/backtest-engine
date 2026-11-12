@@ -101,8 +101,9 @@ export interface ScreenerRow {
   /** Setup-specific facts (dates, prices, ratios), keys differ per setup. */
   detail: Record<string, number | string | null>;
   /** Entry area, stop loss and 2R/3R targets; null for closed setups or when price is already under the stop. */
-  plan: TradePlan | null;
-  chart: ChartData;
+  plan?: TradePlan | null;
+  /** Missing when the result file predates this feature (job not re-run yet). */
+  chart?: ChartData;
   history: {
     bars: number; n_trades: number; win_rate: number | null; profit_factor: number | null;
     avg_trade_return: number | null; total_return: number | null;
