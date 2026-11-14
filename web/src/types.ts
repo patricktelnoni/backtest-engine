@@ -95,7 +95,12 @@ export interface ScreenerRow {
   bars_since_signal: number;
   last_date: string;
   last_close: number;
+  /** Total return since the signal (dividend-adjusted, dividends included). */
   return_since_signal: number;
+  /** Signal-day price -> today's equivalent (1 = no dividend since the signal; 0.98 = 2% paid out). Prices of past
+   *  bars (signal_price, stop, detail prices, chart) are as traded that day; plan levels are in today's prices.
+   *  Absent in result files written before this field existed. */
+  adj_since_signal?: number;
   stop: number;
   stop_distance: number;
   exit_date: string | null;

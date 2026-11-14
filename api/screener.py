@@ -8,7 +8,9 @@ weekdays after the IDX close):
 
 Files under BT_SCREENER_DIR (default: ./screener_data; production: /var/lib/backtest/screener):
     ohlcv/<TICKER>.csv                    per-symbol daily bars, extended incrementally (only missing days are
-                                          downloaded, so a daily run is ~1 small request per symbol)
+                                          downloaded, so a daily run is ~1 small request per symbol); prices are
+                                          dividend-adjusted, `factor` = adjusted / traded price of each bar (the
+                                          screener reports traded prices, see btengine.screener)
     idx_screener.json                     the latest result (every setup in btengine.screener.SETUPS), served
                                           as-is by GET /api/screener
 
@@ -29,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -92,16 +95,32 @@ def _get_json(url: str, retries: int = 3):
 def _repair_ohlc(rows: list[tuple]) -> list[tuple]:
     """Fix bars that violate low <= open,close <= high (seen in Yahoo data). Close is never modified."""
     out, prev_close = [], None
-    for d, o, h, l, c, v in rows:
+    for d, o, h, l, c, v, f in rows:
         if not (l <= o <= h):
             o = prev_close if prev_close is not None else c
-        out.append((d, o, max(h, o, c), min(l, o, c), c, v))
+        out.append((d, o, max(h, o, c), min(l, o, c), c, v, f))
         prev_close = c
     return out
 
 
-def fetch_yahoo(symbol: str, range_: str = FULL_RANGE) -> list[tuple]:
-    """Completed daily bars (date, open, high, low, close, volume), split/dividend adjusted, oldest first."""
+SESSION_GRACE_S = 600  # wait this long after the regular session ends before trusting today's bar as final
+
+
+def _session_closed(meta: dict, today: str, now: float) -> bool:
+    """True when the exchange's regular session for `today` (exchange-local date) has ended. The job runs after
+    the close, so without this the bar it is meant to scan would always be dropped as "still forming"."""
+    end = ((meta.get("currentTradingPeriod") or {}).get("regular") or {}).get("end")
+    if not end:
+        return False
+    offset = meta.get("gmtoffset", 0)
+    end_day = dt.datetime.fromtimestamp(end + offset, tz=dt.timezone.utc).date().isoformat()
+    return end_day == today and now >= end + SESSION_GRACE_S
+
+
+def fetch_yahoo(symbol: str, range_: str = FULL_RANGE, now: float | None = None) -> list[tuple]:
+    """Completed daily bars (date, open, high, low, close, volume, factor), split/dividend adjusted, oldest first;
+    factor = adjclose / close (adjusted price / traded price), so traded price = adjusted price / factor.
+    Today's bar is included once the regular session has closed (plus SESSION_GRACE_S), dropped before that."""
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}"
            f"?range={range_}&interval=1d&events=div%2Csplit")
     body = _get_json(url)["chart"]
@@ -111,19 +130,22 @@ def fetch_yahoo(symbol: str, range_: str = FULL_RANGE) -> list[tuple]:
     offset = res["meta"].get("gmtoffset", 0)  # exchange-local calendar date
     q = res["indicators"]["quote"][0]
     adj = (res["indicators"].get("adjclose") or [{}])[0].get("adjclose")
-    today = dt.datetime.fromtimestamp(time.time() + offset, tz=dt.timezone.utc).date().isoformat()
+    now = time.time() if now is None else now
+    today = dt.datetime.fromtimestamp(now + offset, tz=dt.timezone.utc).date().isoformat()
+    keep_today = _session_closed(res["meta"], today, now)
     rows = []
     for i, ts in enumerate(res.get("timestamp", [])):
         o, h, l, c, v = (q[k][i] for k in ("open", "high", "low", "close", "volume"))
         if None in (o, h, l, c) or c <= 0:
             continue  # holiday / missing bar
+        f = 1.0
         if adj and adj[i]:
             f = adj[i] / c
             o, h, l, c = o * f, h * f, l * f, adj[i]
         d = dt.datetime.fromtimestamp(ts + offset, tz=dt.timezone.utc).date().isoformat()
-        if d >= today:
+        if d > today or (d == today and not keep_today):
             continue  # today's bar is still forming
-        rows.append((d, o, h, l, c, v or 0))
+        rows.append((d, o, h, l, c, v or 0, f))
     return _repair_ohlc(rows)
 
 
@@ -134,19 +156,26 @@ def _range_for(days_missing: int) -> str:
     return FULL_RANGE
 
 
+COLUMNS = ["date", "open", "high", "low", "close", "volume", "factor"]
+
+
 def _read_rows(path: str) -> dict[str, tuple]:
+    """Cached rows by date; {} when missing or written before the `factor` column existed (forces a full refresh,
+    since the traded prices of old rows cannot be recovered without it)."""
     if not os.path.exists(path):
         return {}
     with open(path, newline="") as f:
-        return {r["date"]: (r["date"], float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]),
-                            float(r["volume"])) for r in csv.DictReader(f)}
+        reader = csv.DictReader(f)
+        if "factor" not in (reader.fieldnames or []):
+            return {}
+        return {r["date"]: (r["date"], *(float(r[k]) for k in COLUMNS[1:])) for r in reader}
 
 
 def _write_rows(path: str, rows: dict[str, tuple]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["date", "open", "high", "low", "close", "volume"])
+        w.writerow(COLUMNS)
         w.writerows(rows[k] for k in sorted(rows))
     os.replace(tmp, path)
 
@@ -175,7 +204,9 @@ def refresh_cache(tickers: list[str], fetch=fetch_yahoo, pause: float = 0.3) -> 
             continue
         if range_ == FULL_RANGE:
             have = {}  # full refresh replaces the history (new adjustment factors)
-        have.update({r[0]: r for r in new})
+        # Rows of an incremental fetch are adjusted to a newer reference than the cached ones after a fresh
+        # dividend; each row still carries its own factor, so its traded price (adjusted / factor) stays right.
+        have.update({r[0]: (r if len(r) == 7 else (*r, 1.0)) for r in new})
         _write_rows(path, have)
         log.info("%-6s %s +%d bars (%s), %d total", t, range_, len(new), new[-1][0], len(have))
         if pause and i + 1 < len(tickers):
@@ -191,7 +222,10 @@ def load_frames(tickers: list[str]) -> tuple[dict, dict[str, str]]:
             errors[t] = "no cached data"
             continue
         try:
-            frames[t] = read_ohlcv_csv(path)
+            df = read_ohlcv_csv(path)
+            if "factor" in pd.read_csv(path, nrows=0).columns:  # absent in caches older than the column (--no-fetch)
+                df["factor"] = pd.read_csv(path, usecols=["factor"])["factor"].to_numpy()
+            frames[t] = df
         except ValueError as e:
             errors[t] = f"bad cache file: {e}"
     return frames, errors

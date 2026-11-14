@@ -4,11 +4,20 @@ Pure computation: callers hand in already-loaded OHLCV frames (one per symbol) a
 A screenable strategy implements `scan(df) -> list[dict]`, one record per setup taken, with keys
 entry_bar, exit_bar (None while open), exit_reason, stop and a `detail` dict; detail keys ending in `_bar`
 are reported as dates.
+
+Prices: a frame may carry an extra `factor` column = adjusted price / traded price per bar (e.g. Yahoo
+adjclose / close: < 1 before a dividend ex-date, 1 after the latest one). Signals and the history backtest run on
+the adjusted prices (dividends count as return), but what a trader compares with a broker chart is reported in
+traded prices: the signal close, the stop, the strategy's `price_keys` detail values and the chart are each shown
+in the prices of their own day, and the trade plan in today's prices (the adjusted levels divided by the last bar's
+factor). `adj_since_signal` = factor at signal / factor now (1 = no dividend since the signal; 0.98 = signal-day
+prices are 2% higher than their equivalent today). Without the column, prices are reported as given.
 """
 from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
 
 from .backtest import run_backtest
@@ -34,16 +43,27 @@ def _date(index, i: int) -> str:
     return index[i].strftime("%Y-%m-%d")
 
 
-def _detail(detail: dict, index) -> dict:
+def _detail(detail: dict, index, traded) -> dict:
+    """JSON-ready detail; `traded(value, key)` converts a price key to the traded price of its bar."""
     out = {}
     for k, v in detail.items():
         if k.endswith("_bar"):
             out[k[:-4] + "_date"] = _date(index, v)
         elif isinstance(v, float):
-            out[k] = _num(v)
+            out[k] = _num(traded(v, k))
         else:
             out[k] = v
     return out
+
+
+def _split_factor(df: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
+    """Canonical OHLCV frame plus the per-bar adjustment factor aligned with it (ones when absent/invalid)."""
+    if "factor" not in df.columns:
+        out = validate_ohlcv(df)
+        return out, np.ones(len(out))
+    df = df.sort_index(kind="stable")  # validate_ohlcv sorts the same way, so the factor stays aligned
+    f = pd.to_numeric(df["factor"], errors="coerce").to_numpy(dtype=float)
+    return validate_ohlcv(df), np.where(np.isfinite(f) & (f > 0), f, 1.0)
 
 
 def idx_tick(price: float) -> float:
@@ -104,25 +124,28 @@ def trade_plan(last_close: float, signal_price: float, stop: float, market) -> d
     }
 
 
-def _chart(df: pd.DataFrame, strat, bars: int) -> dict:
-    """Last `bars` bars of price plus the setup's indicator series, as plain lists for the UI."""
+def _chart(df: pd.DataFrame, strat, bars: int, factor: np.ndarray | None = None) -> dict:
+    """Last `bars` bars of price (traded prices of each day) plus the setup's indicator series, as plain lists."""
     ind = strat.indicators(df)
     tail = df.iloc[-bars:]
+    f = np.ones(len(tail)) if factor is None else factor[-bars:]
+    px = lambda ser, scale=True: [_num(round(float(v), 4)) for v in (ser.to_numpy(dtype=float) / f if scale else ser)]
     out = {
         "t": [d.strftime("%Y-%m-%d") for d in tail.index],
-        "open": [round(float(v), 4) for v in tail["open"]],
-        "close": [round(float(v), 4) for v in tail["close"]],
-        "high": [round(float(v), 4) for v in tail["high"]],
-        "low": [round(float(v), 4) for v in tail["low"]],
-        "series": {name: [_num(round(float(v), 4)) for v in ser.iloc[-bars:]] for name, ser in ind.items()},
+        "open": px(tail["open"]),
+        "close": px(tail["close"]),
+        "high": px(tail["high"]),
+        "low": px(tail["low"]),
+        "series": {name: px(ser.iloc[-bars:], strat.price_indicators) for name, ser in ind.items()},
     }
     if "volume" in tail:
         out["volume"] = [_num(float(v)) for v in tail["volume"]]
     return out
 
 
-def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int, chart_bars: int = CHART_BARS) -> dict | None:
-    """One result row, or None when the symbol has no live or recently closed setup."""
+def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int, chart_bars: int = CHART_BARS,
+         factor: np.ndarray | None = None) -> dict | None:
+    """One result row, or None when the symbol has no live or recently closed setup. `factor`: see module doc."""
     setups = strat.scan(df)
     if not setups:
         return None
@@ -132,25 +155,38 @@ def _row(ticker: str, df: pd.DataFrame, strat, market, recent_bars: int, chart_b
 
     close, idx = df["close"].to_numpy(), df.index
     e = last["entry_bar"]
-    last_close = float(close[-1])
+    fac = np.ones(n) if factor is None else factor
+    detail = last.get("detail", {})
+
+    def traded(v: float, key: str) -> float:
+        """Adjusted price `key` of this setup -> traded price on the bar it was read from."""
+        if key not in strat.price_keys:
+            return v
+        bar_key = strat.price_keys[key]
+        return round(v / fac[detail[bar_key] if bar_key else e], 4)
+
+    now = lambda v: round(float(v / fac[-1]), 4)  # adjusted level -> today's prices
+    last_close = now(close[-1])
+    stop_now = now(last["stop"])
     bt = run_backtest(df, strat, market)
     m = bt.metrics
     return {
         "ticker": ticker,
         "status": "active" if last["exit_bar"] is None else "exited",
         "signal_date": _date(idx, e),
-        "signal_price": float(close[e]),
+        "signal_price": round(float(close[e] / fac[e]), 4),
         "bars_since_signal": n - 1 - e,
         "last_date": _date(idx, n - 1),
         "last_close": last_close,
-        "return_since_signal": last_close / close[e] - 1,
-        "stop": last["stop"],
-        "stop_distance": last_close / last["stop"] - 1,
+        "return_since_signal": float(close[-1] / close[e] - 1),  # adjusted: includes dividends paid since
+        "adj_since_signal": float(fac[e] / fac[-1]),
+        "stop": float(traded(last["stop"], "stop")),
+        "stop_distance": last_close / stop_now - 1,
         "exit_date": _date(idx, last["exit_bar"]) if last["exit_bar"] is not None else None,
         "exit_reason": last["exit_reason"],
-        "detail": _detail(last.get("detail", {}), idx),
-        "plan": trade_plan(last_close, float(close[e]), last["stop"], market) if last["exit_bar"] is None else None,
-        "chart": _chart(df, strat, chart_bars),
+        "detail": _detail(detail, idx, traded),
+        "plan": trade_plan(last_close, now(close[e]), stop_now, market) if last["exit_bar"] is None else None,
+        "chart": _chart(df, strat, chart_bars, fac),
         "history": {  # how this setup did on this symbol over the whole frame (same params, market costs)
             "bars": n,
             "n_trades": m["n_trades"],
@@ -169,7 +205,8 @@ def screen(frames: dict[str, pd.DataFrame], setups: dict[str, dict | None] | Non
     that closed within `recent_bars`. Rows are sorted: open first, newest signal first. Symbols that cannot
     be scanned are listed under `errors` instead of aborting the scan.
 
-    `setups` maps strategy name -> params (None/{} for defaults); default: every name in SETUPS."""
+    `setups` maps strategy name -> params (None/{} for defaults); default: every name in SETUPS.
+    A frame may carry a `factor` column (adjusted / traded price, see the module doc)."""
     if setups is None:
         setups = {name: None for name in SETUPS}
     strats = {name: get_strategy(name, **(params or {})) for name, params in setups.items()}
@@ -177,10 +214,10 @@ def screen(frames: dict[str, pd.DataFrame], setups: dict[str, dict | None] | Non
     errors = []
     for ticker, df in frames.items():
         try:
-            df = validate_ohlcv(df)
+            df, factor = _split_factor(df)
             if len(df) < min_bars:
                 raise ValueError(f"only {len(df)} bars, need at least {min_bars}")
-            rows = {name: _row(ticker, df, s, market, recent_bars, chart_bars) for name, s in strats.items()}
+            rows = {name: _row(ticker, df, s, market, recent_bars, chart_bars, factor) for name, s in strats.items()}
         except (ValueError, KeyError) as e:
             errors.append({"ticker": ticker, "error": str(e)})
             continue

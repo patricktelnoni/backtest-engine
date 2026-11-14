@@ -51,7 +51,7 @@ Repository secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (private key matching 
 `VPS_PORT` and `VPS_KNOWN_HOSTS` (`ssh-keyscan -p 22 your-host`, pins the server's host key). Create a
 `production` environment in the repository settings if you want manual approval before each deploy.
 
-## Screener (IDX: bullish divergence, consolidated MA)
+## Screener (IDX: bullish divergence, consolidated MA, stopping volume)
 
 A scheduled job, not a request handler: [api/screener.py](api/screener.py) downloads the missing daily bars for
 every symbol in [api/idx_universe.txt](api/idx_universe.txt) (Yahoo Finance, incremental, cached as CSV), runs
@@ -78,6 +78,12 @@ Production: `deploy/systemd/backtest-screener.timer` runs it Mon-Fri 16:30 WIB a
 lowest CPU/I-O priority; `deploy.sh` installs and enables it, and starts the first run if there is no result yet.
 Compute cost is ~1 ms per symbol; state lives in `BT_SCREENER_DIR` (default `api/screener_data`,
 production `/var/lib/backtest/screener`). `BT_SCREENER_UNIVERSE` points at another symbol list.
+
+Prices: setups and the per-symbol history backtest run on dividend-adjusted bars (so returns include dividends),
+but every price the screener reports (signal close, stop, setup lows, chart) is the traded price of its own day, as
+on a broker chart; the trade plan is in today's prices, and rows flag a dividend paid since the signal. The cache
+CSVs carry a `factor` column (adjusted / traded price) for this; caches without it are refetched in full. Today's
+bar is used once the IDX session has closed (the 16:30 run includes it).
 
 ## Authentication
 

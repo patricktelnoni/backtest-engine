@@ -123,6 +123,17 @@ def test_stopping_volume_filters():
     assert get_strategy("stopping_volume").scan(uptrend) == []                   # needs a decline below the EMA
 
 
+def test_stopping_volume_ignores_zero_volume_bars():
+    # A suspension (flat, zero-volume bars) right before the SV bar must not shrink its volume baseline.
+    df = _sv_df(sv_vol=1500.0)                                   # 1.5x the traded average: not climactic
+    df.iloc[85:100, df.columns.get_loc("volume")] = 0.0          # 15 of the 20 baseline bars untraded
+    assert get_strategy("stopping_volume").scan(df) == []        # was 1500 / 250 = 6x -> false signal
+    df.iloc[88:100, df.columns.get_loc("volume")] = 1000.0       # 3 untraded bars: baseline = the traded ones
+    assert get_strategy("stopping_volume").scan(df) == []
+    df.iloc[100, df.columns.get_loc("volume")] = 5000.0
+    assert get_strategy("stopping_volume").scan(df)[0]["detail"]["volume_ratio"] == pytest.approx(5.0)
+
+
 def test_stopping_volume_exits_on_stop_and_max_hold():
     crash = _sv_df(after=np.concatenate([np.linspace(101, 104, 5), np.full(35, 90.0)]))
     (s,) = get_strategy("stopping_volume").scan(crash)
@@ -133,6 +144,33 @@ def test_stopping_volume_exits_on_stop_and_max_hold():
 
 
 # ---------- trade plan & chart ----------
+
+def test_screener_reports_traded_prices_of_dividend_adjusted_data():
+    # The frame holds adjusted prices; a dividend goes ex at bar 110 (after the signal at 102), so every earlier bar
+    # was traded 2% higher than its adjusted value (factor = adjusted / traded = 0.98).
+    df = _sv_df()
+    df["factor"] = np.where(np.arange(len(df)) < 110, 0.98, 1.0)
+    plain = screen({"X": _sv_df()}, {"stopping_volume": None})["setups"]["stopping_volume"]["results"][0]
+    r = screen({"X": df}, {"stopping_volume": None})["setups"]["stopping_volume"]["results"][0]
+    close = df["close"].to_numpy()
+    assert r["signal_price"] == pytest.approx(close[102] / 0.98)          # as traded on the signal day
+    assert r["stop"] == r["detail"]["sv_low"] == pytest.approx(95 / 0.98)  # the SV bar's real low
+    assert r["detail"]["volume_ratio"] == plain["detail"]["volume_ratio"]  # ratios are not prices
+    assert r["last_close"] == pytest.approx(close[-1]) and r["adj_since_signal"] == pytest.approx(0.98)
+    assert r["return_since_signal"] == pytest.approx(plain["return_since_signal"])  # total return, dividend included
+    assert r["plan"] == plain["plan"] and r["stop_distance"] == pytest.approx(close[-1] / 95 - 1)  # today's prices
+    c, i = r["chart"], len(r["chart"]["t"]) - (len(df) - 100)            # bar 100 inside the chart window
+    assert c["low"][i] == pytest.approx(95 / 0.98) and c["close"][-1] == pytest.approx(close[-1])
+    assert c["series"]["ema50"][i] == pytest.approx(plain["chart"]["series"]["ema50"][i] / 0.98)
+    assert plain["adj_since_signal"] == 1.0 and plain["stop"] == 95.0
+    # oscillators are not rescaled
+    div = make_df(_div_closes())
+    div_f = div.assign(factor=0.5)
+    a = screen({"X": div}, {"bullish_divergence": None}, recent_bars=100, min_bars=50)["setups"]["bullish_divergence"]["results"][0]
+    b = screen({"X": div_f}, {"bullish_divergence": None}, recent_bars=100, min_bars=50)["setups"]["bullish_divergence"]["results"][0]
+    assert b["chart"]["series"]["rsi"] == a["chart"]["series"]["rsi"]
+    assert b["detail"]["second_low"] == pytest.approx(2 * a["detail"]["second_low"]) and b["detail"]["rsi_second"] == a["detail"]["rsi_second"]
+
 
 def test_idx_tick_and_snap():
     from btengine.screener import idx_tick, _snap

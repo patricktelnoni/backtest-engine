@@ -104,6 +104,8 @@ class BullishDivergence(Strategy):
     """
 
     name = "bullish_divergence"
+    price_keys = {"stop": "second_low_bar", "first_low": "first_low_bar", "second_low": "second_low_bar"}
+    price_indicators = False
 
     class Params(BaseModel):
         rsi_period: int = Field(14, ge=2, le=200)
@@ -187,6 +189,7 @@ class ConsolidatedMa(Strategy):
     """
 
     name = "consolidated_ma"
+    price_keys = {"stop": None, "ema_top": None, "ema_bottom": None}
 
     class Params(BaseModel):
         tightness_pct: float = Field(3.0, gt=0, le=50)
@@ -249,7 +252,8 @@ class StoppingVolume(Strategy):
 
     Bar i is a stopping-volume bar when, in a downtrend (close below the `trend_ema` EMA), it prints the lowest
     low of the last `lookback` bars on volume at least `volume_mult` x the average of the previous `volume_window`
-    bars, yet closes in the upper part of its range: (close - low) / (high - low) >= `close_position`. Big volume
+    bars (zero-volume bars -- suspensions, holiday filler rows -- are left out of that average), yet closes in the
+    upper part of its range: (close - low) / (high - low) >= `close_position`. Big volume
     that fails to push price lower means buyers are absorbing the supply.
 
     The signal waits `confirm_bars` bars (0 = signal on the bar itself) and fires at bar i + confirm_bars only if
@@ -260,6 +264,7 @@ class StoppingVolume(Strategy):
     """
 
     name = "stopping_volume"
+    price_keys = {"stop": "sv_bar", "sv_low": "sv_bar"}
 
     class Params(BaseModel):
         trend_ema: int = Field(50, ge=2, le=500)
@@ -276,7 +281,11 @@ class StoppingVolume(Strategy):
         high, low, close = (df[k].to_numpy(dtype=float) for k in ("high", "low", "close"))
         vol = df["volume"].to_numpy(dtype=float)
         ema = df["close"].ewm(span=p.trend_ema, adjust=False).mean().to_numpy()
-        vol_avg = pd.Series(vol).rolling(p.volume_window).mean().shift(1).to_numpy()  # previous bars only
+        # Average of the previous bars only, skipping zero-volume bars (suspension, holiday filler rows): they are
+        # not "quiet" sessions, and counting them as 0 inflates the ratio of the first bar traded after them.
+        # Needs more than half of the window actually traded, otherwise there is no baseline (NaN -> no signal).
+        traded = pd.Series(np.where(vol > 0, vol, np.nan))
+        vol_avg = traded.rolling(p.volume_window, min_periods=p.volume_window // 2 + 1).mean().shift(1).to_numpy()
         warm = max(p.trend_ema, p.lookback, p.volume_window)
 
         def is_sv(i: int) -> tuple[float, float] | None:

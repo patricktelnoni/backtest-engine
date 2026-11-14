@@ -59,6 +59,12 @@ function Status({ r }: { r: ScreenerRow }) {
   return <span className="badge exited">keluar {r.exit_date} ({REASON[r.exit_reason ?? ""] ?? r.exit_reason})</span>;
 }
 
+/** Fraction paid out as dividends since the signal (0 when none or unknown). */
+function paidOut(r: ScreenerRow): number {
+  const a = r.adj_since_signal;
+  return a !== undefined && a < 0.9995 ? 1 - a : 0;
+}
+
 function Signed({ v }: { v: number }) {
   return <span className={v > 0 ? "pos" : v < 0 ? "neg" : ""}>{pct(v)}</span>;
 }
@@ -105,7 +111,14 @@ function Row({ r, setup, selected, onSelect }: { r: ScreenerRow; setup: string; 
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(); } }}>
       <td><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
       <td><Status r={r} /></td>
-      <td>{r.signal_date}<span className="sub">{price(r.signal_price)}</span></td>
+      <td>
+        {r.signal_date}<span className="sub">{price(r.signal_price)}</span>
+        {paidOut(r) > 0 && (
+          <span className="sub muted" title="Harga historis = harga transaksi saat itu; area entry, stop loss, dan TP memakai harga setara sekarang (setelah dividen).">
+            dividen sejak sinyal {(paidOut(r) * 100).toFixed(1)}%
+          </span>
+        )}
+      </td>
       <td>{price(r.last_close)}<span className="sub"><Signed v={r.return_since_signal} /> sejak sinyal</span></td>
       <Plan r={r} />
       <td className="left"><Detail r={r} setup={setup} /></td>
@@ -132,6 +145,11 @@ function ChartPanel({ r, setup }: { r: ScreenerRow; setup: string }) {
         Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
         Stop loss = {SETUPS[setup]?.stopLabel ?? "level invalidasi setup"}{setup === "consolidated_ma" ? " saat sinyal" : ""} dikurangi 0,5%, dibulatkan ke fraksi harga.
         TP1 = entry + 2R, TP2 = entry + 3R. Bukan rekomendasi.
+        {paidOut(r) > 0 && (
+          <> Sejak sinyal ada dividen {(paidOut(r) * 100).toFixed(1)}%: harga historis (sinyal, low, candle) adalah harga transaksi
+            saat itu, sedangkan area entry, stop loss, dan TP memakai harga setara sekarang, jadi stop loss bisa terlihat di bawah low
+            pada chart.</>
+        )}
       </p>
     </>
   );
@@ -278,7 +296,8 @@ export default function Screener() {
         </p>
         <p className="hint">
           Klik baris untuk memuat chart saham itu (120 bar terakhir dengan area entry, stop loss, dan target). Stop ({meta.stopLabel}) ada di kolom
-          detail setup. Harga sinyal = close bar sinyal. Histori = hasil setup yang sama pada saham itu selama {years} tahun data
+          detail setup. Harga sinyal = close bar sinyal. Semua harga = harga transaksi riil (sinyal dan histori dihitung dari harga
+          yang disesuaikan dividen, jadi return sudah termasuk dividen). Histori = hasil setup yang sama pada saham itu selama {years} tahun data
           (biaya idx_stock). Bukan rekomendasi; uji dulu di tab Backtest.
         </p>
       </section>

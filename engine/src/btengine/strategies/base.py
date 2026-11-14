@@ -16,6 +16,11 @@ class Strategy(ABC):
 
     name: ClassVar[str]
     Params: ClassVar[type[BaseModel]]
+    # Screener display: scan() detail keys (and "stop") that hold prices, mapped to the detail key of the bar the
+    # price was read from (None = the entry bar), so they can be reported in that day's traded (unadjusted) prices.
+    price_keys: ClassVar[dict[str, str | None]] = {}
+    # True when indicators() returns price-scaled series (EMAs), False for oscillators (RSI).
+    price_indicators: ClassVar[bool] = True
 
     def __init__(self, **params):
         self.params = self.Params(**params)
