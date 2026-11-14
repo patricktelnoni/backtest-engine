@@ -99,7 +99,7 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
   return (
     <div className="screener-chart">
       <ChartLegend items={legend} />
-      <ResponsiveContainer width="100%" height={400}>
+      <ResponsiveContainer width="100%" height={520}>
         <ComposedChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 0 }} barCategoryGap="20%">
           <CartesianGrid {...GRID} />
           <XAxis dataKey="t" {...X_AXIS} />
@@ -124,7 +124,7 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
         </ComposedChart>
       </ResponsiveContainer>
       {hasVolume && (
-        <ResponsiveContainer width="100%" height={100}>
+        <ResponsiveContainer width="100%" height={120}>
           <ComposedChart data={rows} margin={{ top: 4, right: 12, left: 0, bottom: 0 }} barCategoryGap="20%">
             <CartesianGrid {...GRID} />
             <XAxis dataKey="t" {...X_AXIS} hide />
@@ -135,7 +135,7 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
         </ResponsiveContainer>
       )}
       {rsi && (
-        <ResponsiveContainer width="100%" height={130}>
+        <ResponsiveContainer width="100%" height={150}>
           <ComposedChart data={rows} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid {...GRID} />
             <XAxis dataKey="t" {...X_AXIS} hide />

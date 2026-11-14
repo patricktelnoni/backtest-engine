@@ -131,7 +131,7 @@ export default function Screener() {
   const [picked, setPicked] = useState<string | null>(null);
   const chartRef = useRef<HTMLElement>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(25);
+  const [pageSize, setPageSize] = useState<number>(10);
 
   // Back to the first page whenever the visible set changes.
   useEffect(() => { setPage(1); }, [setup, activeOnly, pageSize]);
