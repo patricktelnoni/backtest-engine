@@ -50,7 +50,7 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
     assert out["scanned"] == 2 and out["universe"] == 3
     assert [e["ticker"] for e in out["errors"]] == ["FAIL"] and "boom" in out["errors"][0]["error"]
     assert out["generated_at"].endswith("+00:00")
-    assert set(out["setups"]) == {"bullish_divergence", "consolidated_ma"}
+    assert set(out["setups"]) == {"bullish_divergence", "consolidated_ma", "stopping_volume"}
     assert out["setups"]["bullish_divergence"]["params"]["rsi_period"] == 14
     assert os.path.exists(os.path.join(screener.cache_dir(), "AAAA.csv"))
     # served verbatim, with the usual auth + no-store rules

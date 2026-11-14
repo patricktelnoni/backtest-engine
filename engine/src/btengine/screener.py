@@ -16,7 +16,7 @@ from .data import validate_ohlcv
 from .markets import Market
 from .strategies import get_strategy
 
-SETUPS = ("bullish_divergence", "consolidated_ma")
+SETUPS = ("bullish_divergence", "consolidated_ma", "stopping_volume")
 MIN_BARS = 120
 CHART_BARS = 120
 STOP_BUFFER = 0.005      # stop loss sits 0.5% under the setup's invalidation level

@@ -242,3 +242,86 @@ class ConsolidatedMa(Strategy):
 
     def indicators(self, df):
         return {f"ema{k}": df["close"].ewm(span=k, adjust=False).mean() for k in EMA_PERIODS}
+
+
+class StoppingVolume(Strategy):
+    """Stopping volume (Wyckoff / VSA): heavy selling absorbed at the end of a decline.
+
+    Bar i is a stopping-volume bar when, in a downtrend (close below the `trend_ema` EMA), it prints the lowest
+    low of the last `lookback` bars on volume at least `volume_mult` x the average of the previous `volume_window`
+    bars, yet closes in the upper part of its range: (close - low) / (high - low) >= `close_position`. Big volume
+    that fails to push price lower means buyers are absorbing the supply.
+
+    The signal waits `confirm_bars` bars (0 = signal on the bar itself) and fires at bar i + confirm_bars only if
+    none of those bars traded below the stopping-volume low, so a confirmation never uses future data.
+
+    Exit on the first of: `max_hold` bars held, or, with `use_stop`, a close below the stopping-volume low
+    (supply was not stopped after all). Long-only.
+    """
+
+    name = "stopping_volume"
+
+    class Params(BaseModel):
+        trend_ema: int = Field(50, ge=2, le=500)
+        lookback: int = Field(20, ge=2, le=500)
+        volume_mult: float = Field(2.0, ge=0, le=20)
+        volume_window: int = Field(20, ge=1, le=500)
+        close_position: float = Field(0.5, ge=0, le=1)
+        confirm_bars: int = Field(2, ge=0, le=20)
+        max_hold: int = Field(30, ge=1, le=1000)
+        use_stop: bool = True
+
+    def _run(self, df) -> tuple[np.ndarray, list[dict]]:
+        p = self.params
+        high, low, close = (df[k].to_numpy(dtype=float) for k in ("high", "low", "close"))
+        vol = df["volume"].to_numpy(dtype=float)
+        ema = df["close"].ewm(span=p.trend_ema, adjust=False).mean().to_numpy()
+        vol_avg = pd.Series(vol).rolling(p.volume_window).mean().shift(1).to_numpy()  # previous bars only
+        warm = max(p.trend_ema, p.lookback, p.volume_window)
+
+        def is_sv(i: int) -> tuple[float, float] | None:
+            """(volume ratio, close position) when bar i is a stopping-volume bar, else None."""
+            rng = high[i] - low[i]
+            if i < warm or rng <= 0 or not vol_avg[i] > 0 or close[i] >= ema[i]:
+                return None
+            if low[i] > low[i - p.lookback + 1:i + 1].min():
+                return None
+            ratio, pos_in_range = vol[i] / vol_avg[i], (close[i] - low[i]) / rng
+            if ratio < p.volume_mult or pos_in_range < p.close_position:
+                return None
+            return float(ratio), float(pos_in_range)
+
+        n = len(df)
+        out = np.zeros(n)
+        setups: list[dict] = []
+        pos, entry_bar, stop = 0.0, -1, np.nan
+        for t in range(n):
+            exited = False
+            if pos == 1.0 and t > entry_bar:
+                reason = ("stop" if p.use_stop and close[t] < stop else
+                          "max_hold" if t - entry_bar >= p.max_hold else None)
+                if reason:
+                    pos, exited = 0.0, True
+                    setups[-1].update(exit_bar=t, exit_reason=reason)
+
+            i = t - p.confirm_bars  # the only candidate whose confirmation completes at bar t
+            if pos == 0.0 and not exited and i >= 0 and (hit := is_sv(i)) and low[i + 1:t + 1].min(initial=np.inf) >= low[i]:
+                ratio, pos_in_range = hit
+                start = max(0, i - p.lookback + 1)
+                pos, entry_bar, stop = 1.0, t, float(low[i])
+                setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": stop,
+                               "detail": {"sv_bar": i, "sv_low": stop, "volume_ratio": ratio,
+                                          "close_position": pos_in_range,
+                                          "drop_pct": float((1 - low[i] / high[start:i + 1].max()) * 100)}})
+            out[t] = pos
+        return out, setups
+
+    def signals(self, df):
+        out, _ = self._run(df)
+        return pd.Series(out, index=df.index)
+
+    def scan(self, df) -> list[dict]:
+        return self._run(df)[1]
+
+    def indicators(self, df):
+        return {f"ema{self.params.trend_ema}": df["close"].ewm(span=self.params.trend_ema, adjust=False).mean()}

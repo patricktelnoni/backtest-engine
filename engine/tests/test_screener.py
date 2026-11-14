@@ -43,7 +43,7 @@ def test_screener_reports_open_and_recent_setups_only():
 
 def test_screener_defaults_to_every_setup():
     out = screen({"X": make_df(np.linspace(100, 150, 300))})
-    assert set(out["setups"]) == set(SETUPS) == {"bullish_divergence", "consolidated_ma"}
+    assert set(out["setups"]) == set(SETUPS) == {"bullish_divergence", "consolidated_ma", "stopping_volume"}
 
 
 # ---------- consolidated_ma ----------
@@ -86,6 +86,50 @@ def test_consolidated_ma_exits_on_stop_and_max_hold():
     assert (s["exit_bar"], s["exit_reason"]) == (265, "stop")
     (s,) = get_strategy("consolidated_ma", use_stop=False, max_hold=10).scan(crash)
     assert (s["exit_bar"], s["exit_reason"]) == (270, "max_hold")
+
+
+# ---------- stopping_volume ----------
+
+def _sv_df(sv_vol=5000.0, sv_close=100.0, after=None):
+    """Steady decline 200 -> 102 (volume 1000), then bar 100: a new low at 95 on `sv_vol`, closing at `sv_close`
+    (high 101), then `after` closes (default: a slow recovery from 101)."""
+    after = np.linspace(101, 115, 25) if after is None else np.asarray(after, dtype=float)
+    df = make_df(np.concatenate([np.linspace(200, 102, 100), [sv_close], after]))
+    df.iloc[100, df.columns.get_indexer(["open", "high", "low", "volume"])] = [99.0, 101.0, 95.0, sv_vol]
+    return df
+
+
+def test_stopping_volume_fires_after_confirmation():
+    df = _sv_df()
+    strat = get_strategy("stopping_volume")
+    sig = strat.signals(df).to_numpy()
+    (setup,) = strat.scan(df)
+    assert setup["entry_bar"] == 102 == int(np.argmax(sig > 0))           # SV bar 100 + 2 confirmation bars
+    assert setup["stop"] == 95.0 and setup["exit_bar"] is None
+    d = setup["detail"]
+    assert d["sv_bar"] == 100 and d["sv_low"] == 95.0 and d["volume_ratio"] == pytest.approx(5.0)
+    assert d["close_position"] == pytest.approx(5 / 6) and d["drop_pct"] > 0
+    assert get_strategy("stopping_volume", confirm_bars=0).scan(df)[0]["entry_bar"] == 100
+
+
+def test_stopping_volume_filters():
+    assert get_strategy("stopping_volume").scan(_sv_df(sv_vol=1500.0)) == []       # volume not climactic
+    assert get_strategy("stopping_volume").scan(_sv_df(sv_close=96.0)) == []       # closes near the low: no absorption
+    undercut = _sv_df(after=np.concatenate([[96.0], np.linspace(101, 115, 39)]))  # next bar's low 95.04 holds...
+    assert get_strategy("stopping_volume").scan(undercut)[0]["entry_bar"] == 102
+    broken = _sv_df(after=np.concatenate([[94.0], np.linspace(101, 115, 39)]))    # ...a low under 95 kills the setup
+    assert get_strategy("stopping_volume").scan(broken) == []
+    uptrend = make_df(np.linspace(100, 200, 141)); uptrend.iloc[100, uptrend.columns.get_loc("volume")] = 5000.0
+    assert get_strategy("stopping_volume").scan(uptrend) == []                   # needs a decline below the EMA
+
+
+def test_stopping_volume_exits_on_stop_and_max_hold():
+    crash = _sv_df(after=np.concatenate([np.linspace(101, 104, 5), np.full(35, 90.0)]))
+    (s,) = get_strategy("stopping_volume").scan(crash)
+    assert (s["entry_bar"], s["exit_bar"], s["exit_reason"]) == (102, 106, "stop")
+    (s,) = get_strategy("stopping_volume", max_hold=10).scan(_sv_df())
+    assert (s["exit_bar"], s["exit_reason"]) == (112, "max_hold")
+    assert set(get_strategy("stopping_volume").indicators(_sv_df())) == {"ema50"}
 
 
 # ---------- trade plan & chart ----------

@@ -121,6 +121,10 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
           {typeof d.second_low_date === "string" && inWindow(d.second_low_date) && (
             <ReferenceDot x={d.second_low_date} y={Number(d.second_low)} r={5} fill={PLAN.stop} stroke="var(--surface)" strokeWidth={2} />
           )}
+          {typeof d.sv_date === "string" && inWindow(d.sv_date) && (
+            <ReferenceDot x={d.sv_date} y={Number(d.sv_low)} r={5} fill={PLAN.stop} stroke="var(--surface)" strokeWidth={2}
+              label={{ value: "SV", position: "bottom", fill: PLAN.stop, fontSize: 11 }} />
+          )}
         </ComposedChart>
       </ResponsiveContainer>
       {hasVolume && (

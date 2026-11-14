@@ -67,6 +67,7 @@ area, SL and TPs.
 | --- | --- |
 | `bullish_divergence` | price makes a lower swing low while RSI makes a higher low; stop = divergence low; exit on RSI >= `exit_rsi` or `max_hold` |
 | `consolidated_ma` | EMA 10/20/50/100/200 within `tightness_pct` (3%) of the close for `min_squeeze_bars` (5) bars, then a close above the highest EMA on volume >= `volume_mult` (1.5x) the `volume_window` (20) average; stop = lowest EMA at signal; exit on stop or `max_hold` (60) |
+| `stopping_volume` | in a downtrend (close below the `trend_ema` (50) EMA), a bar makes the lowest low of `lookback` (20) bars on volume >= `volume_mult` (2x) the `volume_window` (20) average but closes in the upper part of its range (>= `close_position`, 0.5); signal after `confirm_bars` (2) bars that hold above its low; stop = stopping-volume low; exit on stop or `max_hold` (30) |
 
 ```bash
 cd api && python screener.py                   # refresh data + scan (~1 min for 100 symbols, mostly network)

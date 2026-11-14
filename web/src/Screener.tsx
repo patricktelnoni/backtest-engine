@@ -32,6 +32,18 @@ const SETUPS: Record<string, { title: string; rule: string; stopLabel: string; d
       ema_top: ["EMA atas", (v) => price(Number(v))], ema_bottom: ["EMA bawah", (v) => price(Number(v))],
     },
   },
+  stopping_volume: {
+    title: "Stopping volume",
+    rule: "Saat tren turun (close di bawah EMA trend_ema), sebuah bar mencetak low terendah lookback bar dengan volume ≥ volume_mult × rata-rata, tetapi close di bagian atas range (≥ close_position): jual panik diserap pembeli besar. Sinyal muncul setelah confirm_bars bar berikutnya tidak menembus low bar itu. Stop = low bar stopping volume.",
+    stopLabel: "low bar stopping volume",
+    detail: {
+      stop: ["Stop", (v) => price(Number(v))],
+      sv_date: ["Bar SV", String], sv_low: ["low", (v) => price(Number(v))],
+      volume_ratio: ["Volume", (v) => `${Number(v).toFixed(1)}×`],
+      close_position: ["Posisi close", (v) => `${Math.round(Number(v) * 100)}% range`],
+      drop_pct: ["Turun", (v) => `${Number(v).toFixed(1)}% dari high lookback`],
+    },
+  },
 };
 
 function when(iso: string): string {
@@ -39,7 +51,11 @@ function when(iso: string): string {
 }
 
 function Status({ r }: { r: ScreenerRow }) {
-  if (r.status === "active") return <span className="badge active">aktif · {r.bars_since_signal} bar</span>;
+  if (r.status === "active") return (
+      <span className="badge active" title={`Setup masih berjalan: belum kena stop, sinyal keluar RSI, atau batas max hold. Sinyal muncul ${r.bars_since_signal} hari bursa lalu (${r.signal_date}).`}>
+        aktif · {r.bars_since_signal} bar
+      </span>
+    );
   return <span className="badge exited">keluar {r.exit_date} ({REASON[r.exit_reason ?? ""] ?? r.exit_reason})</span>;
 }
 
@@ -114,7 +130,7 @@ function ChartPanel({ r, setup }: { r: ScreenerRow; setup: string }) {
       )}
       <p className="hint">
         Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
-        Stop loss = {setup === "consolidated_ma" ? "EMA terendah saat sinyal" : "low divergence"} dikurangi 0,5%, dibulatkan ke fraksi harga.
+        Stop loss = {SETUPS[setup]?.stopLabel ?? "level invalidasi setup"}{setup === "consolidated_ma" ? " saat sinyal" : ""} dikurangi 0,5%, dibulatkan ke fraksi harga.
         TP1 = entry + 2R, TP2 = entry + 3R. Bukan rekomendasi.
       </p>
     </>
@@ -254,6 +270,12 @@ export default function Screener() {
             </div>
           </nav>
         )}
+        <p className="hint">
+          <strong>Status:</strong> <em>aktif · N bar</em> berarti setup masih berjalan (belum kena stop, sinyal keluar RSI, atau batas max
+          hold), dan N = jumlah bar harian (hari bursa) sejak bar sinyal sampai data terakhir; 0 bar = sinyal muncul di bar terakhir. Makin
+          kecil N, makin baru sinyalnya. <em>keluar</em> berarti setup sudah selesai (sinyalnya muncul ≤ {data.recent_bars} bar
+          terakhir), dengan tanggal dan alasan keluarnya.
+        </p>
         <p className="hint">
           Klik baris untuk memuat chart saham itu (120 bar terakhir dengan area entry, stop loss, dan target). Stop ({meta.stopLabel}) ada di kolom
           detail setup. Harga sinyal = close bar sinyal. Histori = hasil setup yang sama pada saham itu selama {years} tahun data
