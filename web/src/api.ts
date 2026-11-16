@@ -1,4 +1,4 @@
-import type { BacktestResponse, CompareResponse, MarketInfo, Params, ScreenerResponse, StrategyInfo } from "./types";
+import type { BacktestResponse, ChartData, CompareResponse, MarketInfo, Params, ScreenerResponse, StrategyInfo } from "./types";
 
 // ---------- session ----------
 // The session itself is an HttpOnly cookie (JS cannot read it). The CSRF token lives only in memory and is
@@ -125,4 +125,14 @@ export async function getScreener(): Promise<ScreenerResponse | null> {
   const res = await apiFetch("/api/screener");
   if (res.status === 404) return null;
   return check<ScreenerResponse>(res);
+}
+
+/** Chart of one screener row, loaded when the row is opened. `generatedAt` = the result the page shows: the server
+ *  answers 409 when the job has run since, so a chart is never drawn against a row it does not belong to. */
+export async function getScreenerChart(setup: string, ticker: string, generatedAt: string): Promise<ChartData> {
+  const q = new URLSearchParams({ setup, ticker, generated_at: generatedAt });
+  const res = await apiFetch(`/api/screener/chart?${q}`);
+  if (res.status === 409) throw new Error("Hasil screener baru saja diperbarui. Muat ulang halaman untuk melihat chart terbaru.");
+  if (res.status === 404) throw new Error("Data chart belum ada untuk hasil ini. Chart muncul setelah job screener berikutnya.");
+  return check<ChartData>(res);
 }

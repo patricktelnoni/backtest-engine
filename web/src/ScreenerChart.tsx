@@ -3,7 +3,7 @@ import {
 } from "recharts";
 import { AXIS_TICK, axisFormatter, ChartLegend, ChartTooltip, CURSOR, GRID, seriesColor, X_AXIS, Y_AXIS } from "./charts";
 import { price } from "./format";
-import type { ScreenerRow } from "./types";
+import type { ChartData, ScreenerRow } from "./types";
 
 const EMA_LABEL: Record<string, string> = { ema10: "EMA 10", ema20: "EMA 20", ema50: "EMA 50", ema100: "EMA 100", ema200: "EMA 200" };
 const PLAN = { entry: "var(--accent)", stop: "var(--bad)", tp: "var(--good)" };
@@ -68,9 +68,7 @@ function CandleTooltip({ active, payload, label, emaKeys }: {
 }
 
 /** Candlesticks with the setup's overlays: indicator lines, signal bar, divergence lows, entry area, SL and TPs. */
-export default function ScreenerChart({ r }: { r: ScreenerRow }) {
-  const c = r.chart;
-  if (!c) return null;
+export default function ScreenerChart({ r, chart: c }: { r: ScreenerRow; chart: ChartData }) {
   const emaKeys = Object.keys(c.series ?? {}).filter((k) => k.startsWith("ema"));
   const rsi = c.series.rsi;
   const macd = c.series.macd;

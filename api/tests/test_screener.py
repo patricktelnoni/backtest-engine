@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import screener
+from btengine.screener import CHART_BARS
 from conftest import login, make_client
 
 client = make_client()
@@ -29,6 +30,7 @@ def test_endpoint_404_before_first_run():
     assert not os.path.exists(screener.result_path())
     r = client.get("/api/screener")
     assert r.status_code == 404 and "not run" in r.json()["detail"]
+    assert client.get("/api/screener/chart", params={"setup": "x", "ticker": "y"}).status_code == 404
 
 
 def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
@@ -69,6 +71,30 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
     assert out2["setups"]["consolidated_ma"]["params"]["max_hold"] == 7
     assert out2["setups"]["bullish_divergence"]["params"]["max_hold"] == 20   # untouched default
     assert client.get("/api/screener").json() == out2
+
+
+def test_charts_are_split_out_and_served_per_row(monkeypatch, tmp_path):
+    uni = tmp_path / "universe.txt"
+    uni.write_text("\n".join(f"T{i:02d}" for i in range(12)))
+    monkeypatch.setenv("BT_SCREENER_UNIVERSE", str(uni))
+    # fixed seeds (str hash is randomised per process) and every setup ever taken listed, so rows exist
+    out = screener.run(fetch=True, fetcher=lambda sym, rng: _rows(600, seed=int(sym[1:3])), recent_bars=10_000)
+    rows = [(name, r) for name, s in out["setups"].items() for r in s["results"]]
+    assert rows and all("chart" not in r for _, r in rows)
+    on_disk = json.load(open(screener.charts_path()))
+    assert on_disk["generated_at"] == out["generated_at"]
+    assert sum(len(v) for v in on_disk["setups"].values()) == len(rows)
+    setup, row = rows[0]
+    q = {"setup": setup, "ticker": row["ticker"], "generated_at": out["generated_at"]}
+    r = client.get("/api/screener/chart", params=q)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    c = r.json()
+    assert len(c["t"]) == len(c["close"]) == CHART_BARS
+    assert c["t"][-1] == row["last_date"] and "series" in c
+    assert client.get("/api/screener/chart", params={**q, "ticker": "NOPE"}).status_code == 404
+    # a job run since the page loaded its result: refuse rather than draw a chart that does not match the row
+    assert client.get("/api/screener/chart", params={**q, "generated_at": "2000-01-01T00:00:00+00:00"}).status_code == 409
+    assert make_client().get("/api/screener/chart", params=q).status_code == 401
 
 
 def test_fetch_yahoo_keeps_todays_bar_only_after_the_close(monkeypatch):

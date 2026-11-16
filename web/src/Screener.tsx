@@ -1,11 +1,38 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 const PAGE_SIZES = [10, 25, 50, 100] as const;
 import ErrorBoundary from "./ErrorBoundary";
-import ScreenerChart from "./ScreenerChart";
-import { getScreener } from "./api";
+import { getScreener, getScreenerChart } from "./api";
 import { pct, price } from "./format";
-import type { ScreenerResponse, ScreenerRow } from "./types";
+import type { ChartData, ScreenerResponse, ScreenerRow } from "./types";
+
+// Recharts (~half the bundle) only downloads once a chart is first shown or prefetched.
+const loadChartModule = () => import("./ScreenerChart");
+const ScreenerChart = lazy(loadChartModule);
+
+// Chart data per row, fetched on demand and kept for the session (also across tab switches). Keyed by the result's
+// generated_at, so a newer job run never reuses an old chart. Failed loads are dropped so they can be retried.
+const CHART_CACHE_MAX = 200;
+const chartCache = new Map<string, Promise<ChartData>>();
+const chartKey = (gen: string, setup: string, ticker: string) => `${gen}|${setup}|${ticker}`;
+
+function loadChart(gen: string, setup: string, ticker: string): Promise<ChartData> {
+  const key = chartKey(gen, setup, ticker);
+  let p = chartCache.get(key);
+  if (!p) {
+    p = getScreenerChart(setup, ticker, gen);
+    p.catch(() => chartCache.delete(key));
+    chartCache.set(key, p);
+    if (chartCache.size > CHART_CACHE_MAX) chartCache.delete(chartCache.keys().next().value!);
+  }
+  return p;
+}
+
+/** Hover/focus on a row: start both downloads so the chart is usually ready by the time it is clicked. */
+function prefetchChart(gen: string, setup: string, r: ScreenerRow) {
+  void loadChartModule();
+  if (!r.chart) loadChart(gen, setup, r.ticker).catch(() => { /* shown when the row is opened */ });
+}
 
 const REASON: Record<string, string> = { stop: "stop", rsi: "RSI", max_hold: "max hold" };
 
@@ -109,13 +136,16 @@ function Plan({ r }: { r: ScreenerRow }) {
   );
 }
 
-function Row({ r, setup, selected, onSelect }: { r: ScreenerRow; setup: string; selected: boolean; onSelect: () => void }) {
+function Row({ r, setup, selected, onSelect, onPrefetch }: {
+  r: ScreenerRow; setup: string; selected: boolean; onSelect: () => void; onPrefetch: () => void;
+}) {
   const h = r.history;
   const hist = h.n_trades
     ? `${h.n_trades} trade · win ${h.win_rate === null ? "n/a" : `${(h.win_rate * 100).toFixed(0)}%`} · avg ${h.avg_trade_return === null ? "n/a" : pct(h.avg_trade_return, 1)}`
     : "belum ada trade";
   return (
     <tr className={`clickable${selected ? " open" : ""}`} onClick={onSelect} aria-selected={selected} tabIndex={0}
+      onMouseEnter={onPrefetch} onFocus={onPrefetch}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(); } }}>
       <td><strong>{r.ticker}</strong><span className="sub">{r.last_date}</span></td>
       <td><Status r={r} /></td>
@@ -135,8 +165,30 @@ function Row({ r, setup, selected, onSelect }: { r: ScreenerRow; setup: string; 
   );
 }
 
+/** Chart data of a row: inline in old result files, otherwise fetched (cached) when the row is shown. */
+function useChart(r: ScreenerRow, setup: string, gen: string): { chart?: ChartData; error?: string } {
+  const key = chartKey(gen, setup, r.ticker);
+  const [got, setGot] = useState<{ key: string; chart?: ChartData; error?: string } | null>(null);
+  useEffect(() => {
+    if (r.chart) return;
+    let live = true;
+    loadChart(gen, setup, r.ticker).then(
+      (chart) => { if (live) setGot({ key, chart }); },
+      (e: Error) => { if (live) setGot({ key, error: e.message }); },
+    );
+    return () => { live = false; };
+  }, [key, r, gen, setup]);
+  if (r.chart) return { chart: r.chart };
+  return got?.key === key ? got : {};
+}
+
+const ChartLoading = ({ text = "Memuat chart…" }: { text?: string }) => (
+  <div className="chart-loading" aria-busy="true"><span className="muted">{text}</span></div>
+);
+
 /** The chart that sits beside the table and follows the selected row. */
-function ChartPanel({ r, setup }: { r: ScreenerRow; setup: string }) {
+function ChartPanel({ r, setup, gen }: { r: ScreenerRow; setup: string; gen: string }) {
+  const { chart, error } = useChart(r, setup, gen);
   return (
     <>
       <header className="card-head">
@@ -145,10 +197,9 @@ function ChartPanel({ r, setup }: { r: ScreenerRow; setup: string }) {
         </div>
         <Status r={r} />
       </header>
-      {r.chart ? <ScreenerChart key={r.ticker} r={r} /> : (
-        <p className="muted">Data chart belum ada: hasil ini dibuat oleh versi screener lama. Chart dan trade plan muncul setelah job
-          screener berikutnya (atau <code>sudo systemctl start backtest-screener.service</code>).</p>
-      )}
+      {error ? <p className="muted" role="alert">{error}</p> : chart ? (
+        <Suspense fallback={<ChartLoading />}><ScreenerChart key={r.ticker} r={r} chart={chart} /></Suspense>
+      ) : <ChartLoading />}
       <p className="hint">
         Area entry = rentang antara close bar sinyal dan close terakhir (tidak di bawah stop); R dihitung dari tengah area.
         Stop loss = {SETUPS[setup]?.stopLabel ?? "level invalidasi setup"}{setup === "consolidated_ma" ? " saat sinyal" : ""} dikurangi 0,5%, dibulatkan ke fraksi harga.
@@ -289,7 +340,8 @@ export default function Screener() {
               </thead>
               <tbody>
                 {shown.map((r) => (
-                  <Row key={r.ticker} r={r} setup={setup} selected={r.ticker === selected?.ticker} onSelect={() => select(r.ticker)} />
+                  <Row key={r.ticker} r={r} setup={setup} selected={r.ticker === selected?.ticker} onSelect={() => select(r.ticker)}
+                    onPrefetch={() => prefetchChart(data.generated_at, setup, r)} />
                 ))}
               </tbody>
             </table>
@@ -328,7 +380,7 @@ export default function Screener() {
       </section>
       {selected && (
         <section className="card chart-panel" ref={chartRef} aria-live="polite" aria-label={`Chart ${selected.ticker}`}>
-          <ErrorBoundary key={selected.ticker} label="chart"><ChartPanel r={selected} setup={setup} /></ErrorBoundary>
+          <ErrorBoundary key={selected.ticker} label="chart"><ChartPanel r={selected} setup={setup} gen={data.generated_at} /></ErrorBoundary>
         </section>
       )}
       </div>

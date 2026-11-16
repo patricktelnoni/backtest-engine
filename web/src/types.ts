@@ -112,7 +112,7 @@ export interface ScreenerRow {
   detail: Record<string, number | string | null>;
   /** Entry area, stop loss and 2R/3R targets; null for closed setups or when price is already under the stop. */
   plan?: TradePlan | null;
-  /** Missing when the result file predates this feature (job not re-run yet). */
+  /** Only in result files written before charts moved to GET /api/screener/chart (loaded per row on demand). */
   chart?: ChartData;
   history: {
     bars: number; n_trades: number; win_rate: number | null; profit_factor: number | null;

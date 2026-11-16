@@ -1,15 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import ThemeToggle from "./ThemeToggle";
 import {
   getMarkets, getMe, getStrategies, logout, runBacktest, runCompare, setUnauthorizedHandler, type Me, type RunInput,
 } from "./api";
-import Compare from "./Compare";
 import Login from "./Login";
 import ConfigPanel, { MAX_RUNS, type Config, type RunCfg } from "./ConfigPanel";
-import Results from "./Results";
 import Screener from "./Screener";
 import ErrorBoundary from "./ErrorBoundary";
 import type { BacktestResponse, CompareResponse, MarketInfo, Params, StrategyInfo } from "./types";
+
+// Result views pull in Recharts; they load on first use (and are prefetched when a run starts, in parallel with it).
+const loadResults = () => import("./Results");
+const loadCompare = () => import("./Compare");
+const Results = lazy(loadResults);
+const Compare = lazy(loadCompare);
 
 type View = "backtest" | "screener";
 
@@ -90,6 +94,7 @@ export default function App() {
     abort.current?.abort();
     const ctl = (abort.current = new AbortController());
     setLoading(true);
+    void (cfg.runs.length > 1 ? loadCompare() : loadResults()).catch(() => { /* retried by lazy() on render */ });
     setError(null);
     const input: RunInput = {
       market: cfg.market, initialCash: cfg.initialCash, costs: cfg.costs, file: cfg.file,
@@ -195,13 +200,15 @@ export default function App() {
               <button type="button" onClick={run} disabled={loading}>{loading ? "Menjalankan…" : "Jalankan dengan data demo"}</button>
             </div>
           )}
-          {outcome?.kind === "single" && (
-            <Results r={outcome.data} strategy={outcome.strategy} market={outcome.market}
-              initialCash={outcome.initialCash} stale={loading} />
-          )}
-          {outcome?.kind === "compare" && (
-            <Compare r={outcome.data} market={outcome.market} defaults={defaultsByStrategy} stale={loading} />
-          )}
+          <Suspense fallback={<div className="page" aria-busy="true" />}>
+            {outcome?.kind === "single" && (
+              <Results r={outcome.data} strategy={outcome.strategy} market={outcome.market}
+                initialCash={outcome.initialCash} stale={loading} />
+            )}
+            {outcome?.kind === "compare" && (
+              <Compare r={outcome.data} market={outcome.market} defaults={defaultsByStrategy} stale={loading} />
+            )}
+          </Suspense>
         </main>
       </div>
       )}

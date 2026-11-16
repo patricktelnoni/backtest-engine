@@ -11,10 +11,14 @@ Files under BT_SCREENER_DIR (default: ./screener_data; production: /var/lib/back
                                           downloaded, so a daily run is ~1 small request per symbol); prices are
                                           dividend-adjusted, `factor` = adjusted / traded price of each bar (the
                                           screener reports traded prices, see btengine.screener)
-    idx_screener.json                     the latest result (every setup in btengine.screener.SETUPS), served
-                                          as-is by GET /api/screener
+    idx_screener.json                     the latest result (every setup in btengine.screener.SETUPS) without the
+                                          chart data, served as-is by GET /api/screener (~20 KB gzipped)
+    idx_screener_charts.json              the 120-bar chart of every listed row, {"generated_at", "setups":
+                                          {setup: {ticker: chart}}}; GET /api/screener/chart serves one at a time,
+                                          so the page loads a chart (~4 KB) only when its row is opened
 
-The API process never fetches or scans: it only reads the result file, so a request costs one stat() call.
+The API process never fetches or scans: it only reads the result files, so a request costs one stat() call; the
+charts file is parsed once per job run and kept in process memory (~1 MB; one uvicorn process, so no Redis).
 Data source: Yahoo Finance chart endpoint (unofficial, no key; same rules as scripts/fetch_sample_data.py).
 """
 from __future__ import annotations
@@ -34,7 +38,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from btengine.cli import _parse_param
@@ -44,6 +48,7 @@ from btengine.screener import SETUPS, screen
 log = logging.getLogger("backtest.screener")
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESULT_NAME = "idx_screener.json"
+CHARTS_NAME = "idx_screener_charts.json"
 UA = "Mozilla/5.0 (compatible; backtest-platform-screener)"
 FULL_RANGE = "5y"
 
@@ -54,6 +59,17 @@ def state_dir() -> str:
 
 def result_path() -> str:
     return os.path.join(state_dir(), RESULT_NAME)
+
+
+def charts_path() -> str:
+    return os.path.join(state_dir(), CHARTS_NAME)
+
+
+def _write_json(path: str, obj) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, separators=(",", ":"))
+    os.replace(tmp, path)
 
 
 def cache_dir() -> str:
@@ -276,11 +292,13 @@ def run(params: dict[str, dict] | None = None, fetch: bool = True, recent_bars: 
     result["errors"].sort(key=lambda x: x["ticker"])
     result.update(universe=len(tickers), generated_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                   duration_s=round(time.perf_counter() - t0, 1))
+    # Charts go to their own file (loaded per row on demand); written first, so a client that already holds the new
+    # result never asks for a chart the server does not have yet.
+    charts = {name: {r["ticker"]: r.pop("chart") for r in s["results"] if "chart" in r}
+              for name, s in result["setups"].items()}
     os.makedirs(state_dir(), exist_ok=True)
-    tmp = result_path() + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(result, f, separators=(",", ":"))
-    os.replace(tmp, result_path())
+    _write_json(charts_path(), {"generated_at": result["generated_at"], "setups": charts})
+    _write_json(result_path(), result)
     found = ", ".join(f"{k}={len(v['results'])}" for k, v in result["setups"].items())
     log.info("scanned %d/%d symbols (%s), %d errors, %.1fs", result["scanned"], len(tickers), found,
              len(result["errors"]), result["duration_s"])
@@ -291,6 +309,8 @@ def run(params: dict[str, dict] | None = None, fetch: bool = True, recent_bars: 
 
 router = APIRouter()
 _cached: tuple[tuple, bytes] | None = None
+# (file key, generated_at, {(setup, ticker): encoded chart}): parsed once per job run, then each request is a dict lookup.
+_charts: tuple[tuple, str | None, dict[tuple[str, str], bytes]] | None = None
 
 
 @router.get("/api/screener")
@@ -307,6 +327,40 @@ async def screener():
         with open(path, "rb") as f:
             _cached = (key, f.read())
     return Response(_cached[1], media_type="application/json")
+
+
+def _load_charts() -> tuple[str | None, dict[tuple[str, str], bytes]] | None:
+    global _charts
+    path = charts_path()
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    if _charts is None or _charts[0] != key:
+        with open(path, "rb") as f:
+            d = json.load(f)
+        index = {(setup, ticker): json.dumps(c, separators=(",", ":")).encode()
+                 for setup, rows in d.get("setups", {}).items() for ticker, c in rows.items()}
+        _charts = (key, d.get("generated_at"), index)
+    return _charts[1], _charts[2]
+
+
+@router.get("/api/screener/chart")
+async def screener_chart(setup: str = Query(max_length=64), ticker: str = Query(max_length=32),
+                         generated_at: str | None = Query(None, max_length=64)):
+    """Chart of one listed row. `generated_at` (of the result the client shows) guards against a job run in between:
+    409 when the charts on disk belong to another run, so the page never draws a chart that does not match its row."""
+    loaded = _load_charts()
+    if loaded is None:
+        raise HTTPException(404, "no chart data (result written by an older screener; re-run the job)")
+    gen, index = loaded
+    if generated_at is not None and generated_at != gen:
+        raise HTTPException(409, "screener result was updated; reload the page")
+    body = index.get((setup, ticker))
+    if body is None:
+        raise HTTPException(404, f"no chart for {ticker} in {setup}")
+    return Response(body, media_type="application/json")
 
 
 # ---------- CLI ----------

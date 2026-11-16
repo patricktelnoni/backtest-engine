@@ -55,12 +55,15 @@ Repository secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY` (private key matching 
 
 A scheduled job, not a request handler: [api/screener.py](api/screener.py) downloads the missing daily bars for
 every symbol in [api/idx_universe.txt](api/idx_universe.txt) (Yahoo Finance, incremental, cached as CSV), runs
-every setup in `btengine.screener.SETUPS` on each, and writes one JSON file. `GET /api/screener` serves that
-file (one `stat()` per request); the **Screener** tab in the UI has one sub-tab per setup with open setups,
+every setup in `btengine.screener.SETUPS` on each, and writes two JSON files: the result without chart data
+(~20 KB gzipped), served by `GET /api/screener` (one `stat()` per request), and the charts, which
+`GET /api/screener/chart?setup=&ticker=&generated_at=` serves one row at a time from process memory (parsed once
+per job run; no Redis needed with a single uvicorn process). The **Screener** tab in the UI has one sub-tab per setup with open setups,
 recently closed ones, setup-specific details, how the same setup did historically on that symbol, and for every
 open setup a **trade plan**: entry area (between the signal close and the current close, never under the stop),
 stop loss (the setup's invalidation level minus 0.5%), and take profits at 2R and 3R, all snapped to IDX price
-fractions. Clicking a row opens a 120-bar chart with the indicators (EMAs or RSI), the signal bar, the entry
+fractions. Clicking a row loads and opens a 120-bar chart (fetched on hover, cached for the session; `409` if
+the job ran since the page loaded its result) with the indicators (EMAs or RSI), the signal bar, the entry
 area, SL and TPs.
 
 | Setup | Rule (long only) |
@@ -122,6 +125,8 @@ The API is sized for a small shared VPS:
   at startup, and uploads are parsed from the spooled file reading only the date + OHLCV columns.
 - **One session lookup per request** (the middleware's check is reused by the route) on a SQLite database in
   WAL mode with `synchronous=NORMAL`.
+- **Recharts is code-split**: the login, form and screener table load without it (~80 KB gzipped JS); the chart
+  chunk follows when a chart is first shown, prefetched when a backtest starts or a screener row is hovered.
 - **Static assets are pre-compressed** by `npm run build` (`scripts/precompress.mjs`) and served by nginx with
   `gzip_static on`, so nothing is re-gzipped per visitor. Fingerprinted assets are cached for a year.
 
@@ -145,6 +150,7 @@ The API is sized for a small shared VPS:
 | `GET /api/strategies`, `GET /api/markets` | catalog (strategy param JSON schemas, market cost defaults) |
 | `POST /api/backtest` | one strategy; returns metrics, series, trades |
 | `POST /api/compare` | `runs` = JSON list of `{strategy, params}`; returns per-run metrics + aligned series |
+| `GET /api/screener`, `GET /api/screener/chart` | latest screener result; one row's chart (see Screener) |
 
 Both POSTs are multipart forms sharing `market`, `initial_cash`, `start`, `end`, the four cost overrides, and an optional CSV `file`.
 
