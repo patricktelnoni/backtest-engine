@@ -248,6 +248,10 @@ table.trades td { white-space: normal; }
 .badge.active { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); }
 .badge.exited { background: var(--chip); color: var(--text-2); font-weight: 500; }
 .pill.warn { color: var(--bad); }
+/* Manual screening button: right end of the screener header, wraps under the pills on narrow screens. */
+.run-control { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; font-size: 13px; }
+.run-control .pill { margin-left: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty .run-control { margin: 12px auto 0; justify-content: center; }
 table.screener td { vertical-align: top; }
 table.screener .sub { display: block; font-size: 12px; color: var(--text-2); }
 table.screener .divergence span { display: block; font-size: 12px; white-space: nowrap; }

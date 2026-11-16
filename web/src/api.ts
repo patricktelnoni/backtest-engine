@@ -1,4 +1,4 @@
-import type { BacktestResponse, ChartData, CompareResponse, MarketInfo, Params, ScreenerResponse, StrategyInfo } from "./types";
+import type { BacktestResponse, ChartData, CompareResponse, MarketInfo, Params, ScreenerResponse, ScreenerStatus, StrategyInfo } from "./types";
 
 // ---------- session ----------
 // The session itself is an HttpOnly cookie (JS cannot read it). The CSRF token lives only in memory and is
@@ -136,3 +136,9 @@ export async function getScreenerChart(setup: string, ticker: string, generatedA
   if (res.status === 404) throw new Error("Data chart belum ada untuk hasil ini. Chart muncul setelah job screener berikutnya.");
   return check<ChartData>(res);
 }
+
+/** State of the screener job (polled while a run is queued/running). */
+export const getScreenerStatus = () => apiFetch("/api/screener/status").then(check<ScreenerStatus>);
+
+/** Ask for a screening run now; fails with the server's reason while one runs (409) or during the cooldown (429). */
+export const runScreener = () => apiFetch("/api/screener/run", { method: "POST" }).then(check<ScreenerStatus>);

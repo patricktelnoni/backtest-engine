@@ -1,0 +1,14 @@
+# /etc/systemd/system/backtest-screener.path
+#   sudo systemctl enable --now backtest-screener.path
+# Manual runs from the web UI: POST /api/screener/run (API, unprivileged) writes run.request; its existence starts
+# backtest-screener.service, whose ExecStartPre removes it. systemd never starts a second instance of a running
+# oneshot, and the API refuses requests while a run is queued/running or within the cooldown.
+[Unit]
+Description=Start the IDX screener when the web UI requests a manual run
+
+[Path]
+PathExists=/var/lib/backtest/screener/run.request
+Unit=backtest-screener.service
+
+[Install]
+WantedBy=multi-user.target

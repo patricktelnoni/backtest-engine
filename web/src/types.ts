@@ -133,3 +133,18 @@ export interface ScreenerResponse {
   errors: { ticker: string; error: string }[];
   setups: Record<string, ScreenerSetup>;
 }
+
+/** GET /api/screener/status: the scheduled/manual job, for the "Jalankan screening" button. */
+export interface ScreenerStatus {
+  state: "idle" | "queued" | "running";
+  started_at: string | null;
+  finished_at: string | null;
+  /** Outcome of the last finished run; null before the first run with status tracking. */
+  ok: boolean | null;
+  error: string | null;
+  /** generated_at of the result the last successful run wrote. */
+  generated_at: string | null;
+  /** Seconds until another run may be requested (0 = now). */
+  cooldown_s: number;
+  cooldown_total_s: number;
+}

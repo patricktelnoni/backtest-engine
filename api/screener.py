@@ -17,18 +17,30 @@ Files under BT_SCREENER_DIR (default: ./screener_data; production: /var/lib/back
                                           {setup: {ticker: chart}}}; GET /api/screener/chart serves one at a time,
                                           so the page loads a chart (~4 KB) only when its row is opened
 
+    status.json                           state of the last/current job run (running, ok/error, generated_at)
+    run.request                           written by POST /api/screener/run; under systemd its existence starts
+                                          the job (deploy/systemd/backtest-screener.path), which removes it
+    run.lock                              flock held by a running job, so two runs never overlap
+
 The API process never fetches or scans: it only reads the result files, so a request costs one stat() call; the
 charts file is parsed once per job run and kept in process memory (~1 MB; one uvicorn process, so no Redis).
+A manual run (button in the UI) starts the same job outside the API process: BT_SCREENER_RUNNER=systemd (production)
+only writes run.request, "process" (default, local dev) spawns `python screener.py` at low priority. Runs are
+limited to one at a time and one per BT_SCREENER_COOLDOWN_S (default 600 s) so Yahoo is not hammered.
 Data source: Yahoo Finance chart endpoint (unofficial, no key; same rules as scripts/fetch_sample_data.py).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime as dt
+import fcntl
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -38,9 +50,10 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
+import auth
 from btengine.cli import _parse_param
 from btengine.data import read_ohlcv_csv
 from btengine.screener import SETUPS, screen
@@ -363,6 +376,141 @@ async def screener_chart(setup: str = Query(max_length=64), ticker: str = Query(
     return Response(body, media_type="application/json")
 
 
+# ---------- manual runs ----------
+
+REQUEST_NAME = "run.request"
+STATUS_NAME = "status.json"
+LOCK_NAME = "run.lock"
+RUN_STALE_S = 25 * 60   # > the service's TimeoutStartSec (20 min): a "running" status older than this is a dead job
+START_TIMEOUT_S = 120   # a request nobody picked up by then means the trigger is not set up (path unit disabled)
+
+
+def request_path() -> str:
+    return os.path.join(state_dir(), REQUEST_NAME)
+
+
+def status_path() -> str:
+    return os.path.join(state_dir(), STATUS_NAME)
+
+
+def cooldown_s() -> int:
+    return max(0, int(os.environ.get("BT_SCREENER_COOLDOWN_S", "600")))
+
+
+def runner() -> str:
+    return os.environ.get("BT_SCREENER_RUNNER", "process")
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _iso(t: dt.datetime) -> str:
+    return t.isoformat(timespec="seconds")
+
+
+def _read_json_file(path: str) -> dict:
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _ts(v) -> dt.datetime | None:
+    try:
+        return dt.datetime.fromisoformat(v) if isinstance(v, str) else None
+    except ValueError:
+        return None
+
+
+@contextlib.contextmanager
+def job_lock():
+    """Yields True while holding the job lock, False when another run holds it (non-blocking)."""
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(os.path.join(state_dir(), LOCK_NAME), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def job_status(now: dt.datetime | None = None) -> dict:
+    """What the UI shows next to the button: idle | queued | running, the last run's outcome, and the cooldown left."""
+    now = now or _utcnow()
+    st = _read_json_file(status_path())
+    req = _ts(_read_json_file(request_path()).get("requested_at"))
+    state = st.get("state") if st.get("state") in ("idle", "running") else "idle"
+    started = _ts(st.get("started_at"))
+    ok, error = st.get("ok"), st.get("error")
+    if state == "running" and (started is None or (now - started).total_seconds() > RUN_STALE_S):
+        state, ok, error = "idle", False, "screening berhenti tanpa selesai (lihat journalctl -u backtest-screener)"
+    if req is not None and state != "running" and (started is None or req > started):
+        if (now - req).total_seconds() <= START_TIMEOUT_S:
+            state = "queued"
+        else:
+            ok, error = False, "permintaan screening tidak dijalankan (cek backtest-screener.path di server)"
+    last = max((t for t in (req, started) if t is not None), default=None)
+    left = 0 if last is None else max(0, int(cooldown_s() - (now - last).total_seconds() + 0.999))
+    return {
+        "state": state,
+        "started_at": st.get("started_at"),
+        "finished_at": st.get("finished_at"),
+        "ok": ok,
+        "error": error,
+        "generated_at": st.get("generated_at"),
+        "cooldown_s": left,
+        "cooldown_total_s": cooldown_s(),
+    }
+
+
+def _spawn_job() -> None:
+    """Local/dev runner: the job as a detached low-priority child process (never inside the API process)."""
+    os.makedirs(state_dir(), exist_ok=True)
+    cmd = [sys.executable, os.path.join(HERE, "screener.py")]
+    if shutil.which("nice"):
+        cmd = [shutil.which("nice"), "-n", "15", *cmd]
+    with open(os.path.join(state_dir(), "last_run.log"), "ab") as out:
+        p = subprocess.Popen(cmd, cwd=HERE, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    threading.Thread(target=p.wait, daemon=True, name="screener-reaper").start()  # no zombie when it exits
+
+
+@router.get("/api/screener/status")
+async def screener_status():
+    return job_status()
+
+
+@router.post("/api/screener/run", status_code=202)
+async def screener_run(session: auth.Session = Depends(auth.current_session)):
+    """Start a screening run now. 409 while one is queued/running, 429 + Retry-After during the cooldown.
+    No await between the checks and the request write: within the one event loop this is atomic."""
+    st = job_status()
+    if st["state"] != "idle":
+        raise HTTPException(409, "screening sedang berjalan")
+    if st["cooldown_s"] > 0:
+        raise HTTPException(429, f"screening baru bisa dijalankan lagi dalam {st['cooldown_s']} detik",
+                            headers={"Retry-After": str(st["cooldown_s"])})
+    os.makedirs(state_dir(), exist_ok=True)
+    _write_json(request_path(), {"requested_at": _iso(_utcnow()), "by": session.username})
+    if runner() != "systemd":
+        try:
+            _spawn_job()
+        except OSError as e:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(request_path())
+            log.error("could not start screener job: %s", e)
+            raise HTTPException(500, "screening gagal dijalankan")
+    log.info("manual screener run requested by %s (%s)", session.username, runner())
+    return job_status()
+
+
 # ---------- CLI ----------
 
 def main(argv: list[str] | None = None) -> int:
@@ -381,11 +529,24 @@ def main(argv: list[str] | None = None) -> int:
         if setup not in SETUPS or not name:
             ap.error(f"-p expects SETUP.KEY=VALUE with SETUP one of {', '.join(SETUPS)}; got {key!r}")
         params.setdefault(setup, {})[name] = value
-    try:
-        run(params, fetch=not args.no_fetch, recent_bars=args.recent_bars, workers=args.workers)
-    except Exception as e:
-        log.error("screener failed: %s", e)
-        return 1
+    with job_lock() as mine:
+        if not mine:
+            log.info("another screener run is in progress; nothing to do")
+            return 0
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(request_path())  # consumed (under systemd, ExecStartPre already removed it)
+        started = _iso(_utcnow())
+        _write_json(status_path(), {"state": "running", "started_at": started})
+        try:
+            result = run(params, fetch=not args.no_fetch, recent_bars=args.recent_bars, workers=args.workers)
+        except Exception as e:
+            log.error("screener failed: %s", e)
+            _write_json(status_path(), {"state": "idle", "started_at": started, "finished_at": _iso(_utcnow()),
+                                        "ok": False, "error": f"screening gagal: {e}"[:500]})
+            return 1
+        gen = result.get("generated_at") if isinstance(result, dict) else None
+        _write_json(status_path(), {"state": "idle", "started_at": started, "finished_at": _iso(_utcnow()),
+                                    "ok": True, "error": None, "generated_at": gen})
     return 0
 
 

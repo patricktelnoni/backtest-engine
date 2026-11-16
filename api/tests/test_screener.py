@@ -182,3 +182,89 @@ def test_cli_parses_params(monkeypatch):
     assert screener.main(["--no-fetch"]) == 0 and seen["workers"] == screener.FETCH_WORKERS
     with pytest.raises(SystemExit):
         screener.main(["-p", "oversold=35"])
+
+
+# ---------- manual runs (button in the UI) ----------
+
+@pytest.fixture
+def run_dir(monkeypatch, tmp_path):
+    """Own state dir, fake runner (no real job is ever spawned by the tests), 10-minute cooldown."""
+    monkeypatch.setenv("BT_SCREENER_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("BT_SCREENER_COOLDOWN_S", "600")
+    monkeypatch.setenv("BT_SCREENER_RUNNER", "process")
+    spawned = []
+    monkeypatch.setattr(screener, "_spawn_job", lambda: spawned.append(1))
+    return spawned
+
+
+def _finish_job(monkeypatch, fail=False):
+    """Run the CLI job as the runner would (scan replaced by a stub)."""
+    def fake_run(params, fetch, recent_bars, workers):
+        if fail:
+            raise RuntimeError("yahoo down")
+        return {"generated_at": "2026-11-16T09:30:00+00:00"}
+    monkeypatch.setattr(screener, "run", fake_run)
+    return screener.main([])
+
+
+def test_manual_run_queue_status_and_cooldown(monkeypatch, run_dir):
+    st = client.get("/api/screener/status").json()
+    assert st["state"] == "idle" and st["cooldown_s"] == 0 and st["ok"] is None
+    assert make_client().get("/api/screener/status").status_code == 401
+    anon = make_client()
+    login(anon)
+    anon.headers.pop("X-CSRF-Token")
+    assert anon.post("/api/screener/run").status_code == 403          # CSRF required like every POST
+
+    r = client.post("/api/screener/run")
+    assert r.status_code == 202 and r.json()["state"] == "queued" and run_dir == [1]
+    assert json.load(open(screener.request_path()))["by"] == "tester"
+    assert client.post("/api/screener/run").status_code == 409        # one at a time
+    assert run_dir == [1]
+
+    assert _finish_job(monkeypatch) == 0
+    assert not os.path.exists(screener.request_path())               # consumed by the job
+    st = client.get("/api/screener/status").json()
+    assert st["state"] == "idle" and st["ok"] is True and st["generated_at"] == "2026-11-16T09:30:00+00:00"
+    assert 590 < st["cooldown_s"] <= 600
+    r = client.post("/api/screener/run")
+    assert r.status_code == 429 and 590 < int(r.headers["retry-after"]) <= 600
+
+    monkeypatch.setenv("BT_SCREENER_COOLDOWN_S", "0")
+    assert client.post("/api/screener/run").status_code == 202 and run_dir == [1, 1]
+
+
+def test_manual_run_systemd_runner_only_writes_the_request(monkeypatch, run_dir):
+    monkeypatch.setenv("BT_SCREENER_RUNNER", "systemd")
+    assert client.post("/api/screener/run").status_code == 202
+    assert run_dir == [] and os.path.exists(screener.request_path())
+
+
+def test_job_failure_and_dead_or_unclaimed_runs_are_reported(monkeypatch, run_dir):
+    assert _finish_job(monkeypatch, fail=True) == 1
+    st = screener.job_status()
+    assert st["state"] == "idle" and st["ok"] is False and "yahoo down" in st["error"]
+
+    now = screener._utcnow()
+    old = screener._iso(now - dt.timedelta(seconds=screener.RUN_STALE_S + 60))
+    screener._write_json(screener.status_path(), {"state": "running", "started_at": old})
+    st = screener.job_status(now)
+    assert st["state"] == "idle" and st["ok"] is False and "berhenti" in st["error"]
+
+    # a request the trigger never picked up (path unit not enabled) stops counting as queued
+    os.remove(screener.status_path())
+    req = screener._iso(now - dt.timedelta(seconds=screener.START_TIMEOUT_S + 5))
+    screener._write_json(screener.request_path(), {"requested_at": req})
+    st = screener.job_status(now)
+    assert st["state"] == "idle" and "tidak dijalankan" in st["error"]
+    assert screener.job_status(now - dt.timedelta(seconds=screener.START_TIMEOUT_S))["state"] == "queued"
+
+
+def test_job_lock_keeps_runs_from_overlapping(monkeypatch, run_dir):
+    calls = []
+    monkeypatch.setattr(screener, "run", lambda *a, **k: calls.append(1))
+    with screener.job_lock() as mine:
+        assert mine
+        assert screener.main([]) == 0 and calls == []                 # second run backs off
+        assert not os.path.exists(screener.status_path())
+    assert screener.main([]) == 0 and calls == [1]

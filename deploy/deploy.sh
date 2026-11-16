@@ -30,6 +30,14 @@ sudo /usr/bin/install -m 644 "$APP_DIR/deploy/systemd/backtest-screener.timer" /
 sudo /usr/bin/install -m 644 "$APP_DIR/deploy/nginx/backtest.conf" /etc/nginx/sites-available/backtest.conf
 sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemctl enable --now backtest-screener.timer
+# Manual-run trigger (newer than the original sudoers file: warn instead of failing the deploy if it is not allowed yet)
+if sudo -n /usr/bin/install -m 644 "$APP_DIR/deploy/systemd/backtest-screener.path" /etc/systemd/system/backtest-screener.path \
+   && sudo -n /usr/bin/systemctl daemon-reload && sudo -n /usr/bin/systemctl enable --now backtest-screener.path; then
+  :
+else
+  echo "WARNING: backtest-screener.path not installed; the UI's manual screening button will not start runs." >&2
+  echo "         Update /etc/sudoers.d/backtest-deploy from deploy/sudoers-backtest-deploy (see README)." >&2
+fi
 
 echo "==> restart api"
 sudo /usr/bin/systemctl restart backtest-api

@@ -1,10 +1,10 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 const PAGE_SIZES = [10, 25, 50, 100] as const;
 import ErrorBoundary from "./ErrorBoundary";
-import { getScreener, getScreenerChart } from "./api";
+import { getScreener, getScreenerChart, getScreenerStatus, runScreener } from "./api";
 import { pct, price } from "./format";
-import type { ChartData, ScreenerResponse, ScreenerRow } from "./types";
+import type { ChartData, ScreenerResponse, ScreenerRow, ScreenerStatus } from "./types";
 
 // Recharts (~half the bundle) only downloads once a chart is first shown or prefetched.
 const loadChartModule = () => import("./ScreenerChart");
@@ -214,6 +214,72 @@ function ChartPanel({ r, setup, gen }: { r: ScreenerRow; setup: string; gen: str
   );
 }
 
+const POLL_MS = 3000;
+const clock = (iso: string) => new Date(iso).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+/** "Jalankan screening": starts the job on the server, follows it, and reloads the result once a new one is written.
+ *  Polls only while a run is queued/running; the cooldown counts down locally. */
+function RunControl({ generatedAt, onNewResult }: { generatedAt: string | null; onNewResult: () => void }) {
+  const [st, setSt] = useState<(ScreenerStatus & { at: number }) | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const keep = (s: ScreenerStatus) => { const at = Date.now(); setNow(at); setSt({ ...s, at }); };
+  const refresh = useCallback(() => getScreenerStatus().then(keep, (e: Error) => setErr(e.message)), []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+  const running = st?.state === "queued" || st?.state === "running";
+  useEffect(() => {
+    if (!running) return;
+    const id = setTimeout(() => void refresh(), POLL_MS);
+    return () => clearTimeout(id);
+  }, [st, running, refresh]);
+  useEffect(() => {
+    if (st?.state === "idle" && st.ok && st.generated_at && st.generated_at !== generatedAt) onNewResult();
+  }, [st, generatedAt, onNewResult]);
+
+  const left = st ? Math.max(0, Math.ceil(st.cooldown_s - (now - st.at) / 1000)) : 0;
+  useEffect(() => {
+    if (running || left <= 0) return;
+    const id = setTimeout(() => setNow(Date.now()), 1000);
+    return () => clearTimeout(id);
+  }, [running, left, now]);
+
+  const start = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      keep(await runScreener());
+    } catch (e) {
+      setErr((e as Error).message);
+      void refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let note: string | null = null;
+  if (st?.state === "queued") note = "menunggu dimulai…";
+  else if (st?.state === "running") {
+    const secs = st.started_at ? Math.max(0, Math.round((Date.now() - new Date(st.started_at).getTime()) / 1000)) : 0;
+    note = `berjalan ${mmss(secs)} (biasanya < 1 menit)`;
+  } else if (left > 0) note = `bisa lagi dalam ${mmss(left)}`;
+  const failed = !running && st?.ok === false ? st.error : null;
+
+  return (
+    <div className="run-control" aria-live="polite">
+      {failed && <span className="pill warn" title={failed}>run terakhir gagal{st?.finished_at ? ` (${clock(st.finished_at)})` : ""}</span>}
+      {err && <span className="pill warn" role="alert">{err}</span>}
+      {note && <span className="muted">{note}</span>}
+      <button type="button" className="ghost" onClick={start} disabled={!st || busy || running || left > 0}
+        title="Unduh data terbaru dan jalankan semua setup sekarang. Saat bursa masih buka, bar hari ini belum dipakai.">
+        {running ? "Screening berjalan…" : busy ? "Memulai…" : "Jalankan screening"}
+      </button>
+    </div>
+  );
+}
+
 export default function Screener() {
   // undefined = loading; null = the job has not produced a result yet
   const [data, setData] = useState<ScreenerResponse | null | undefined>(undefined);
@@ -241,6 +307,11 @@ export default function Screener() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A run finished (button or scheduled job): swap in the new result, keeping the tab, filters and selection.
+  const reload = useCallback(() => {
+    getScreener().then((d) => { if (d) setData(d); }).catch((e: Error) => setError(e.message));
+  }, []);
+
   if (data === undefined) return <div className="page" aria-busy="true" />;
   if (error) return <div className="page"><div className="error" role="alert">{error}</div></div>;
   if (data === null) {
@@ -250,8 +321,9 @@ export default function Screener() {
           <h2>Screener belum pernah dijalankan</h2>
           <p>
             Hasil muncul setelah job terjadwal <code>backtest-screener</code> selesai (hari bursa, 16:30 WIB).
-            Jalankan manual di server: <code>sudo systemctl start backtest-screener.service</code>.
+            Atau jalankan sekarang:
           </p>
+          <RunControl generatedAt={null} onNewResult={reload} />
         </div>
       </div>
     );
@@ -287,6 +359,7 @@ export default function Screener() {
         <span className="pill">{data.scanned}/{data.universe} saham</span>
         <span className="pill">diperbarui {when(data.generated_at)}</span>
         {data.errors.length > 0 && <span className="pill warn">{data.errors.length} gagal</span>}
+        <RunControl generatedAt={data.generated_at} onNewResult={reload} />
       </div>
 
       <div className="setup-tabs" role="tablist" aria-label="Setup">

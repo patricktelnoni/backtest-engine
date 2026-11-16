@@ -79,6 +79,18 @@ cd api && python screener.py --no-fetch -p bullish_divergence.oversold=35 -p con
 
 Production: `deploy/systemd/backtest-screener.timer` runs it Mon-Fri 16:30 WIB as the service user, with the
 lowest CPU/I-O priority; `deploy.sh` installs and enables it, and starts the first run if there is no result yet.
+
+**Manual runs**: the **Jalankan screening** button (any logged-in user) calls `POST /api/screener/run`; the page
+polls `GET /api/screener/status` every 3 s while the run is queued/running and swaps in the new result when it is
+done, without a reload. The job never runs inside the API process: with `BT_SCREENER_RUNNER=systemd` (production)
+the API only writes `run.request` and `deploy/systemd/backtest-screener.path` starts the same service as the timer;
+the default `process` (local dev) spawns `python screener.py` at `nice 15`. One run at a time (`409`; the job also
+holds a file lock, so timer and button never overlap) and one per `BT_SCREENER_COOLDOWN_S` (default 600 s, `429` +
+`Retry-After`) so Yahoo is not hammered. A run takes ~10-15 s for 100 symbols. During the IDX session it cannot add
+today's bar (see Prices), so a manual run is mostly useful after the close, after a failed scheduled run, or after
+changing the universe. Existing servers need the two new lines of `deploy/sudoers-backtest-deploy` installed once
+(`sudo visudo -cf ... && sudo install -m 440 ...`, as in CI/CD above); until then `deploy.sh` warns and the button's
+requests stay unstarted (the UI reports it after 2 minutes).
 Compute cost is ~1 ms per symbol; state lives in `BT_SCREENER_DIR` (default `api/screener_data`,
 production `/var/lib/backtest/screener`). `BT_SCREENER_UNIVERSE` points at another symbol list.
 
@@ -151,6 +163,7 @@ The API is sized for a small shared VPS:
 | `POST /api/backtest` | one strategy; returns metrics, series, trades |
 | `POST /api/compare` | `runs` = JSON list of `{strategy, params}`; returns per-run metrics + aligned series |
 | `GET /api/screener`, `GET /api/screener/chart` | latest screener result; one row's chart (see Screener) |
+| `GET /api/screener/status`, `POST /api/screener/run` | screener job state; start a manual run (see Screener) |
 
 Both POSTs are multipart forms sharing `market`, `initial_cash`, `start`, `end`, the four cost overrides, and an optional CSV `file`.
 
