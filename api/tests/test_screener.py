@@ -46,7 +46,7 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
         return _rows(400, seed=hash(symbol) % 100)
 
     out = screener.run(fetch=True, fetcher=fake_fetch)
-    assert [c[0] for c in calls] == ["AAAA.JK", "BBBB.JK", "FAIL.JK"] and calls[0][1] == "5y"
+    assert sorted(calls) == [("AAAA.JK", "5y"), ("BBBB.JK", "5y"), ("FAIL.JK", "5y")]   # parallel: any order
     assert out["scanned"] == 2 and out["universe"] == 3
     assert [e["ticker"] for e in out["errors"]] == ["FAIL"] and "boom" in out["errors"][0]["error"]
     assert out["generated_at"].endswith("+00:00")
@@ -63,7 +63,7 @@ def test_job_builds_cache_and_result_file(monkeypatch, tmp_path):
     calls.clear()
     screener.run(fetch=True, fetcher=fake_fetch)
     expected = "5y" if dt.date.today().weekday() == 0 else screener._range_for((dt.date.today() - dt.date(2022, 2, 7)).days + 1)
-    assert calls[0] == ("AAAA.JK", expected)
+    assert ("AAAA.JK", expected) in calls
     # offline re-run with other params re-reads the cache and rewrites the file
     out2 = screener.run({"consolidated_ma": {"max_hold": 7}}, fetch=False, fetcher=None)
     assert out2["setups"]["consolidated_ma"]["params"]["max_hold"] == 7
@@ -100,10 +100,45 @@ def test_cache_without_factor_column_is_refetched_in_full(monkeypatch, tmp_path)
         f.write("date,open,high,low,close,volume\n2026-11-12,98,99,97,98,10\n")
     calls = []
     rows = [("2026-11-11", 98.0, 99.0, 97.0, 98.0, 10.0, 0.98), ("2026-11-12", 100.0, 101.0, 99.0, 100.0, 10.0, 1.0)]
-    screener.refresh_cache(["OLD"], fetch=lambda sym, r: calls.append(r) or rows, pause=0)
+    screener.refresh_cache(["OLD"], fetch=lambda sym, r: calls.append(r) or rows, spacing=0)
     assert calls == ["5y"]
     frames, errors = screener.load_frames(["OLD"])
     assert not errors and frames["OLD"]["factor"].tolist() == [0.98, 1.0]
+
+
+def test_refresh_cache_downloads_in_parallel_and_keeps_errors_per_symbol(monkeypatch, tmp_path):
+    import threading
+    import time
+    monkeypatch.setenv("BT_SCREENER_DIR", str(tmp_path))
+    tickers = [f"S{i}" for i in range(8)]
+    lock, active, peak = threading.Lock(), [0], [0]
+
+    def slow_fetch(symbol, range_):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        with lock:
+            active[0] -= 1
+        if symbol == "S3.JK":
+            raise RuntimeError("boom")
+        return _rows(5, seed=1)
+
+    t0 = time.perf_counter()
+    errors = screener.refresh_cache(tickers, fetch=slow_fetch, workers=4, spacing=0)
+    elapsed = time.perf_counter() - t0
+    assert errors == {"S3": "boom"}
+    assert peak[0] == 4 and elapsed < 0.2 * 8 / 2                  # 2 waves of 4, not 8 sequential calls
+    assert sorted(os.listdir(screener.cache_dir())) == sorted(f"{t}.csv" for t in tickers if t != "S3")
+
+
+def test_spacer_spaces_request_starts():
+    import time
+    sp = screener._Spacer(0.05)
+    t0 = time.monotonic()
+    for _ in range(4):
+        sp.wait()
+    assert time.monotonic() - t0 >= 0.15                           # first slot is immediate, then 3 gaps
 
 
 def test_range_for_days_missing():
@@ -112,10 +147,12 @@ def test_range_for_days_missing():
 
 def test_cli_parses_params(monkeypatch):
     seen = {}
-    monkeypatch.setattr(screener, "run", lambda params, fetch, recent_bars: seen.update(params=params, fetch=fetch, rb=recent_bars))
+    monkeypatch.setattr(screener, "run", lambda params, fetch, recent_bars, workers:
+                        seen.update(params=params, fetch=fetch, rb=recent_bars, workers=workers))
     assert screener.main(["--no-fetch", "-p", "bullish_divergence.oversold=35", "-p", "consolidated_ma.use_stop=false",
-                          "--recent-bars", "3"]) == 0
+                          "--recent-bars", "3", "--workers", "2"]) == 0
     assert seen == {"params": {"bullish_divergence": {"oversold": 35}, "consolidated_ma": {"use_stop": False}},
-                    "fetch": False, "rb": 3}
+                    "fetch": False, "rb": 3, "workers": 2}
+    assert screener.main(["--no-fetch"]) == 0 and seen["workers"] == screener.FETCH_WORKERS
     with pytest.raises(SystemExit):
         screener.main(["-p", "oversold=35"])

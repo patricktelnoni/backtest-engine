@@ -26,10 +26,12 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
@@ -180,38 +182,66 @@ def _write_rows(path: str, rows: dict[str, tuple]) -> None:
     os.replace(tmp, path)
 
 
-def refresh_cache(tickers: list[str], fetch=fetch_yahoo, pause: float = 0.3) -> dict[str, str]:
-    """Extend each symbol's cached CSV with the bars it is missing. Returns {ticker: error} for failures."""
+FETCH_WORKERS = 8      # parallel downloads; the job is network-bound, the scan itself takes ~1 s
+FETCH_SPACING_S = 0.1  # minimum gap between two request starts across all workers (<= 10 requests/s)
+
+
+class _Spacer:
+    """Thread-safe pacing: wait() returns no sooner than `gap` seconds after the previous caller's slot."""
+
+    def __init__(self, gap: float):
+        self.gap, self.next, self.lock = gap, 0.0, threading.Lock()
+
+    def wait(self) -> None:
+        if self.gap <= 0:
+            return
+        with self.lock:
+            now = time.monotonic()
+            slot = max(now, self.next)
+            self.next = slot + self.gap
+        if slot > now:
+            time.sleep(slot - now)
+
+
+def _refresh_one(t: str, fetch, spacer: _Spacer) -> str | None:
+    """Extend one symbol's cached CSV; returns an error message or None. Each symbol owns its file, so
+    workers never touch the same path."""
+    path = os.path.join(cache_dir(), f"{t}.csv")
+    have = _read_rows(path)
+    if have:
+        last = dt.date.fromisoformat(max(have))
+        # Adjusted prices shift after a split/dividend, so refetch everything now and then (weekly on Monday).
+        days = (dt.date.today() - last).days + 1
+        range_ = FULL_RANGE if dt.date.today().weekday() == 0 else _range_for(days)
+    else:
+        range_ = FULL_RANGE
+    try:
+        spacer.wait()
+        new = fetch(f"{t}.JK", range_)
+        if not new:
+            raise RuntimeError("no rows")
+    except Exception as e:  # keep going so one bad symbol does not block the rest
+        log.warning("fetch %s failed: %s", t, e)
+        return str(e)
+    if range_ == FULL_RANGE:
+        have = {}  # full refresh replaces the history (new adjustment factors)
+    # Rows of an incremental fetch are adjusted to a newer reference than the cached ones after a fresh
+    # dividend; each row still carries its own factor, so its traded price (adjusted / factor) stays right.
+    have.update({r[0]: (r if len(r) == 7 else (*r, 1.0)) for r in new})
+    _write_rows(path, have)
+    log.info("%-6s %s +%d bars (%s), %d total", t, range_, len(new), new[-1][0], len(have))
+    return None
+
+
+def refresh_cache(tickers: list[str], fetch=fetch_yahoo, workers: int = FETCH_WORKERS,
+                  spacing: float = FETCH_SPACING_S) -> dict[str, str]:
+    """Extend each symbol's cached CSV with the bars it is missing, `workers` downloads at a time, request starts
+    at least `spacing` seconds apart (rate limit; _get_json also backs off on 429). Returns {ticker: error}."""
     os.makedirs(cache_dir(), exist_ok=True)
-    errors = {}
-    for i, t in enumerate(tickers):
-        path = os.path.join(cache_dir(), f"{t}.csv")
-        have = _read_rows(path)
-        if have:
-            last = dt.date.fromisoformat(max(have))
-            # Adjusted prices shift after a split/dividend, so refetch everything now and then (weekly on Monday).
-            days = (dt.date.today() - last).days + 1
-            range_ = FULL_RANGE if dt.date.today().weekday() == 0 else _range_for(days)
-        else:
-            range_ = FULL_RANGE
-        try:
-            new = fetch(f"{t}.JK", range_)
-            if not new:
-                raise RuntimeError("no rows")
-        except Exception as e:  # keep going so one bad symbol does not block the rest
-            errors[t] = str(e)
-            log.warning("fetch %s failed: %s", t, e)
-            continue
-        if range_ == FULL_RANGE:
-            have = {}  # full refresh replaces the history (new adjustment factors)
-        # Rows of an incremental fetch are adjusted to a newer reference than the cached ones after a fresh
-        # dividend; each row still carries its own factor, so its traded price (adjusted / factor) stays right.
-        have.update({r[0]: (r if len(r) == 7 else (*r, 1.0)) for r in new})
-        _write_rows(path, have)
-        log.info("%-6s %s +%d bars (%s), %d total", t, range_, len(new), new[-1][0], len(have))
-        if pause and i + 1 < len(tickers):
-            time.sleep(pause)
-    return errors
+    spacer = _Spacer(spacing)
+    with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="fetch") as pool:
+        results = list(pool.map(lambda t: _refresh_one(t, fetch, spacer), tickers))
+    return {t: err for t, err in zip(tickers, results) if err is not None}
 
 
 def load_frames(tickers: list[str]) -> tuple[dict, dict[str, str]]:
@@ -231,12 +261,13 @@ def load_frames(tickers: list[str]) -> tuple[dict, dict[str, str]]:
     return frames, errors
 
 
-def run(params: dict[str, dict] | None = None, fetch: bool = True, recent_bars: int = 10, fetcher=fetch_yahoo) -> dict:
+def run(params: dict[str, dict] | None = None, fetch: bool = True, recent_bars: int = 10, fetcher=fetch_yahoo,
+        workers: int = FETCH_WORKERS) -> dict:
     """Refresh data (unless fetch=False), scan the universe with every setup and write the result file atomically.
     `params` = {setup name: {param: value}} overrides; setups not mentioned run with their defaults."""
     t0 = time.perf_counter()
     tickers = load_universe()
-    errors = refresh_cache(tickers, fetch=fetcher) if fetch else {}
+    errors = refresh_cache(tickers, fetch=fetcher, workers=workers) if fetch else {}
     frames, load_errors = load_frames(tickers)
     setups = {name: (params or {}).get(name) for name in SETUPS}
     result = screen(frames, setups, recent_bars=recent_bars)
@@ -286,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-p", "--param", action="append", default=[], type=_parse_param, metavar="SETUP.KEY=VALUE",
                     help=f"setup parameter, repeatable; setups: {', '.join(SETUPS)}")
     ap.add_argument("--recent-bars", type=int, default=10, help="also list setups closed within N bars (default 10)")
+    ap.add_argument("--workers", type=int, default=FETCH_WORKERS,
+                    help=f"parallel downloads (default {FETCH_WORKERS}; lower it if Yahoo starts answering 429)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     params: dict[str, dict] = {}
@@ -295,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"-p expects SETUP.KEY=VALUE with SETUP one of {', '.join(SETUPS)}; got {key!r}")
         params.setdefault(setup, {})[name] = value
     try:
-        run(params, fetch=not args.no_fetch, recent_bars=args.recent_bars)
+        run(params, fetch=not args.no_fetch, recent_bars=args.recent_bars, workers=args.workers)
     except Exception as e:
         log.error("screener failed: %s", e)
         return 1
