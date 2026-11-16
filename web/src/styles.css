@@ -264,6 +264,18 @@ table.screener .divergence span { display: block; font-size: 12px; white-space: 
 table.screener th.left, table.screener td.left { text-align: left; }
 .detail { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 14px; font-size: 12px; justify-content: start; }
 .detail em { font-style: normal; color: var(--text-2); margin-right: 4px; }
+/* Bullish divergence: stop + divergence kind on the first row, then one row per low (date, price, RSI, MACD). */
+.detail.cols-4 { grid-template-columns: repeat(4, auto); }
+.detail.cols-4 > :nth-child(2) { grid-column: span 3; }
+/* Divergence filter (RSI / MACD / both) under the table header */
+.div-filter { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+.div-filter button {
+  width: auto; background: var(--surface); color: var(--text-2); border: 1px solid var(--border-strong); padding: 5px 12px;
+  border-radius: 999px; font-weight: 500; font-size: 12px;
+}
+.div-filter button:hover:not(.active) { background: var(--chip); color: var(--text); filter: none; }
+.div-filter button.active { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+.div-filter .count { display: inline-block; min-width: 16px; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: var(--chip); font-size: 11px; font-weight: 600; }
 [hidden] { display: none !important; }
 /* Screener: the table is the page, so let it grow with its rows (only horizontal scroll on narrow screens). */
 .page .scroll { max-height: none; overflow-y: visible; }

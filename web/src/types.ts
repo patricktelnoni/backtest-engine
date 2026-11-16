@@ -1,6 +1,8 @@
 export interface ParamProp {
   type?: "integer" | "number" | "boolean" | "string";
   default?: number | boolean | string;
+  /** Allowed values of a choice parameter (pydantic Literal), rendered as a select. */
+  enum?: string[];
   minimum?: number;
   maximum?: number;
   title?: string;
@@ -84,7 +86,8 @@ export interface ChartData {
   low: number[];
   /** Shares traded per bar; absent in result files written before volume was added. */
   volume?: (number | null)[];
-  /** Indicator series aligned with `t`: ema10..ema200 for consolidated_ma, rsi for bullish_divergence, ema<trend_ema> for stopping_volume. */
+  /** Indicator series aligned with `t`: ema10..ema200 for consolidated_ma, rsi + macd/macd_signal/macd_hist for
+   *  bullish_divergence, ema<trend_ema> for stopping_volume. */
   series: Record<string, (number | null)[]>;
 }
 export interface ScreenerRow {

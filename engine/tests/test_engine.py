@@ -190,6 +190,57 @@ def test_bullish_divergence_has_no_lookahead():
         assert strat.signals(df.iloc[: t + 1]).iloc[-1] == full[t], f"look-ahead at bar {t}"
 
 
+def _walks(n_seeds=12, bars=600):
+    for seed in range(n_seeds):
+        rng = np.random.default_rng(seed)
+        yield make_df(100 * np.exp(np.cumsum(rng.normal(0, 0.02, bars))))
+
+
+def test_bullish_divergence_indicator_modes_and_labels():
+    # Every setup's label must match what its two lows actually show, and each mode only takes what it asks for.
+    allowed = {"rsi": {"rsi", "both"}, "macd": {"macd", "both"}, "both": {"both"}, "any": {"rsi", "macd", "both"}}
+    seen = {m: set() for m in allowed}
+    for df in _walks():
+        for mode in allowed:
+            strat = get_strategy("bullish_divergence", indicator=mode)
+            for s in strat.scan(df):
+                d = s["detail"]
+                rsi_div = d["rsi_second"] > d["rsi_first"] and d["rsi_first"] <= strat.params.oversold
+                macd_div = d["macd_second"] > d["macd_first"] and d["macd_first"] < 0
+                assert d["second_low"] < d["first_low"]
+                assert d["divergence"] == ("both" if rsi_div and macd_div else "rsi" if rsi_div else "macd")
+                assert d["divergence"] in allowed[mode]
+                seen[mode].add(d["divergence"])
+    assert seen == allowed  # random walks exercise every label in every mode
+
+
+def test_bullish_divergence_rsi_default_is_unchanged_and_macd_classic_case():
+    df = make_df(_div_closes())
+    assert get_strategy("bullish_divergence").params.indicator == "rsi"     # backtests keep their old results
+    (s,) = get_strategy("bullish_divergence").scan(df)
+    assert s["entry_bar"] == 70 and s["detail"]["divergence"] == "both"       # this textbook case diverges on MACD too
+    assert get_strategy("bullish_divergence", indicator="macd").scan(df)[0]["entry_bar"] == 70
+    assert not get_strategy("bullish_divergence", indicator="any").signals(make_df(_no_div_closes())).any()
+    # MACD's below-zero filter: an impossible threshold for RSI leaves only MACD, which then needs macd_first < 0
+    for s in get_strategy("bullish_divergence", indicator="any", oversold=1).scan(make_df(_div_closes())):
+        assert s["detail"]["divergence"] == "macd" and s["detail"]["macd_first"] < 0
+    with pytest.raises(ValueError):
+        get_strategy("bullish_divergence", macd_fast=26, macd_slow=12)
+    with pytest.raises(ValueError):
+        get_strategy("bullish_divergence", indicator="stoch")
+
+
+@pytest.mark.parametrize("mode", ["macd", "both", "any"])
+def test_bullish_divergence_macd_modes_have_no_lookahead(mode):
+    rng = np.random.default_rng(7)
+    df = make_df(100 * np.exp(np.cumsum(rng.normal(0, 0.02, 300))))
+    strat = get_strategy("bullish_divergence", indicator=mode, pivot_left=2, pivot_right=2, oversold=100, max_hold=5)
+    full = strat.signals(df).to_numpy()
+    assert full.sum() > 0
+    for t in range(len(df)):
+        assert strat.signals(df.iloc[: t + 1]).iloc[-1] == full[t], f"look-ahead at bar {t}"
+
+
 def test_bullish_divergence_stop_exits_when_divergence_low_breaks():
     # Entry at bar 70 (pivot at 67 confirmed); stop = low of bar 67 = 79 * 0.99 = 78.21.
     # Bar 71 closes at 78 < 78.21 -> the setup is invalidated and the position is closed on that bar.

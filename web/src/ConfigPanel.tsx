@@ -61,6 +61,15 @@ function RunFields({ run, index, strategies, canRemove, onStrategy, onChange, on
       {props.length === 0 && <small className="muted">Tidak ada parameter.</small>}
       {props.map(([key, p]) => {
         const val = run.params[key];
+        if (p.enum)
+          return (
+            <label key={key}>
+              {key}
+              <select value={String(val)} onChange={(e) => onChange({ ...run.params, [key]: e.target.value })}>
+                {p.enum.map((o) => <option key={o}>{o}</option>)}
+              </select>
+            </label>
+          );
         if (p.type === "boolean")
           return (
             <label key={key} className="check">

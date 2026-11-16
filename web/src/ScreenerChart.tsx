@@ -73,10 +73,16 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
   if (!c) return null;
   const emaKeys = Object.keys(c.series ?? {}).filter((k) => k.startsWith("ema"));
   const rsi = c.series.rsi;
+  const macd = c.series.macd;
   const rows: Candle[] = c.t.map((t, i) => {
     const row: Candle = { t, open: c.open[i], high: c.high[i], low: c.low[i], close: c.close[i], range: [c.low[i], c.high[i]] };
     for (const k of emaKeys) row[k] = c.series[k][i];
     if (rsi) row.rsi = rsi[i];
+    if (macd) {
+      row.macd = macd[i];
+      row.macd_signal = c.series.macd_signal?.[i] ?? null;
+      row.macd_hist = c.series.macd_hist?.[i] ?? null;
+    }
     if (c.volume) row.volume = c.volume[i];
     return row;
   });
@@ -89,6 +95,8 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
   const hasVolume = !!c.volume?.some((v) => v != null && v > 0);
   const inWindow = (d: string) => c.t.includes(d);
   const d = r.detail;
+  const kind = String(d.divergence ?? "rsi");  // which oscillator the divergence was found on
+  const lows = (k: "first" | "second") => (k === "first" ? d.first_low_date : d.second_low_date);
   const legend = [
     { label: "Candle (naik kosong, turun isi)", color: "var(--text-2)" },
     ...emaKeys.map((k, i) => ({ label: EMA_LABEL[k] ?? k, color: seriesColor(i + 1) })),
@@ -148,14 +156,40 @@ export default function ScreenerChart({ r }: { r: ScreenerRow }) {
             <ReferenceLine y={30} stroke="var(--baseline)" strokeDasharray="3 3" />
             <ReferenceLine y={70} stroke="var(--baseline)" strokeDasharray="3 3" />
             <Line dataKey="rsi" name="RSI" stroke={seriesColor(1)} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            {typeof d.first_low_date === "string" && inWindow(d.first_low_date) && (
-              <ReferenceDot x={d.first_low_date} y={Number(d.rsi_first)} r={4} fill={seriesColor(1)} stroke="var(--surface)" strokeWidth={2} />
-            )}
-            {typeof d.second_low_date === "string" && inWindow(d.second_low_date) && (
-              <ReferenceDot x={d.second_low_date} y={Number(d.rsi_second)} r={4} fill={seriesColor(1)} stroke="var(--surface)" strokeWidth={2} />
-            )}
+            {kind !== "macd" && (["first", "second"] as const).map((k) => {
+              const x = lows(k);
+              return typeof x === "string" && inWindow(x) && (
+                <ReferenceDot key={k} x={x} y={Number(d[`rsi_${k}`])} r={4} fill={seriesColor(1)} stroke="var(--surface)" strokeWidth={2} />
+              );
+            })}
           </ComposedChart>
         </ResponsiveContainer>
+      )}
+      {macd && (
+        <>
+          <ChartLegend items={[
+            { label: "MACD", color: seriesColor(2) }, { label: "Signal", color: seriesColor(3) },
+            { label: "Histogram", color: "var(--muted)" },
+          ]} />
+          <ResponsiveContainer width="100%" height={150}>
+            <ComposedChart data={rows} margin={{ top: 4, right: 12, left: 0, bottom: 0 }} barCategoryGap="20%">
+              <CartesianGrid {...GRID} />
+              <XAxis dataKey="t" {...X_AXIS} hide />
+              <YAxis {...Y_AXIS} width={64} tickCount={3} tick={AXIS_TICK} tickFormatter={(v: number) => v.toFixed(Math.abs(v) < 10 ? 1 : 0)} />
+              <Tooltip content={<ChartTooltip format={(v) => v.toFixed(2)} />} cursor={CURSOR} />
+              <ReferenceLine y={0} stroke="var(--baseline)" />
+              <Bar dataKey="macd_hist" name="Histogram" fill="var(--muted)" fillOpacity={0.5} isAnimationActive={false} />
+              <Line dataKey="macd" name="MACD" stroke={seriesColor(2)} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Line dataKey="macd_signal" name="Signal" stroke={seriesColor(3)} strokeWidth={1.25} dot={false} isAnimationActive={false} />
+              {kind !== "rsi" && (["first", "second"] as const).map((k) => {
+                const x = lows(k);
+                return typeof x === "string" && inWindow(x) && (
+                  <ReferenceDot key={k} x={x} y={Number(d[`macd_${k}`])} r={4} fill={seriesColor(2)} stroke="var(--surface)" strokeWidth={2} />
+                );
+              })}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </>
       )}
     </div>
   );

@@ -26,6 +26,9 @@ from .markets import Market
 from .strategies import get_strategy
 
 SETUPS = ("bullish_divergence", "consolidated_ma", "stopping_volume")
+# Screener defaults that differ from the strategy's own (backtest) defaults; explicit params override them.
+# Divergence: list RSI and MACD divergences alike, each row says which one fired (detail.divergence).
+SETUP_DEFAULTS: dict[str, dict] = {"bullish_divergence": {"indicator": "any"}}
 MIN_BARS = 120
 CHART_BARS = 120
 STOP_BUFFER = 0.005      # stop loss sits 0.5% under the setup's invalidation level
@@ -136,7 +139,7 @@ def _chart(df: pd.DataFrame, strat, bars: int, factor: np.ndarray | None = None)
         "close": px(tail["close"]),
         "high": px(tail["high"]),
         "low": px(tail["low"]),
-        "series": {name: px(ser.iloc[-bars:], strat.price_indicators) for name, ser in ind.items()},
+        "series": {name: px(ser.iloc[-bars:], name not in strat.oscillators) for name, ser in ind.items()},
     }
     if "volume" in tail:
         out["volume"] = [_num(float(v)) for v in tail["volume"]]
@@ -205,11 +208,13 @@ def screen(frames: dict[str, pd.DataFrame], setups: dict[str, dict | None] | Non
     that closed within `recent_bars`. Rows are sorted: open first, newest signal first. Symbols that cannot
     be scanned are listed under `errors` instead of aborting the scan.
 
-    `setups` maps strategy name -> params (None/{} for defaults); default: every name in SETUPS.
+    `setups` maps strategy name -> params (None/{} for defaults, i.e. SETUP_DEFAULTS over the strategy's own);
+    default: every name in SETUPS.
     A frame may carry a `factor` column (adjusted / traded price, see the module doc)."""
     if setups is None:
         setups = {name: None for name in SETUPS}
-    strats = {name: get_strategy(name, **(params or {})) for name, params in setups.items()}
+    strats = {name: get_strategy(name, **{**SETUP_DEFAULTS.get(name, {}), **(params or {})})
+              for name, params in setups.items()}
     results = {name: [] for name in strats}
     errors = []
     for ticker, df in frames.items():

@@ -9,16 +9,24 @@ import type { ScreenerResponse, ScreenerRow } from "./types";
 
 const REASON: Record<string, string> = { stop: "stop", rsi: "RSI", max_hold: "max hold" };
 
+/** Bullish divergence rows say which oscillator diverged (detail.divergence); the tab filters on it. */
+const DIV_LABEL: Record<string, string> = { rsi: "RSI saja", macd: "MACD saja", both: "RSI + MACD" };
+const DIV_FILTERS = [["all", "Semua"], ["rsi", "RSI saja"], ["macd", "MACD saja"], ["both", "RSI + MACD"]] as const;
+type DivFilter = (typeof DIV_FILTERS)[number][0];
+
 /** Per setup: title, one-line rule, and how to label/format its `detail` keys (unknown keys fall back to key: value). */
 const SETUPS: Record<string, { title: string; rule: string; stopLabel: string; detail: Record<string, [string, (v: number | string) => string]> }> = {
   bullish_divergence: {
     title: "Bullish divergence",
-    rule: "Harga membuat swing low lebih rendah sementara RSI membuat low lebih tinggi. Sinyal saat pivot kedua terkonfirmasi; stop = low divergence.",
+    rule: "Harga membuat swing low lebih rendah sementara RSI dan/atau MACD membuat low lebih tinggi (RSI: low pertama ≤ oversold; MACD: garis MACD low pertama di bawah 0). Sinyal saat pivot kedua terkonfirmasi; stop = low divergence. Keluar saat RSI ≥ exit_rsi, max hold, atau stop.",
     stopLabel: "low divergence",
     detail: {
       stop: ["Stop", (v) => price(Number(v))],
+      divergence: ["Divergence", (v) => DIV_LABEL[String(v)] ?? String(v)],
       first_low_date: ["Low 1", String], first_low: ["harga", (v) => price(Number(v))], rsi_first: ["RSI", (v) => Number(v).toFixed(1)],
+      macd_first: ["MACD", (v) => Number(v).toFixed(2)],
       second_low_date: ["Low 2", String], second_low: ["harga", (v) => price(Number(v))], rsi_second: ["RSI", (v) => Number(v).toFixed(1)],
+      macd_second: ["MACD", (v) => Number(v).toFixed(2)],
     },
   },
   consolidated_ma: {
@@ -73,7 +81,7 @@ function Detail({ r, setup }: { r: ScreenerRow; setup: string }) {
   const spec = SETUPS[setup]?.detail ?? {};
   const entries: [string, number | string | null][] = [["stop", r.stop], ...Object.entries(r.detail)];
   return (
-    <div className="detail">
+    <div className={`detail${setup === "bullish_divergence" && "divergence" in r.detail ? " cols-4" : ""}`}>
       {entries.map(([k, v]) => {
         const [label, fmt] = spec[k] ?? [k, String];
         return <span key={k}><em>{label}</em> {v === null ? "n/a" : fmt(v)}</span>;
@@ -161,6 +169,7 @@ export default function Screener() {
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<string>("bullish_divergence");
   const [activeOnly, setActiveOnly] = useState(true);
+  const [div, setDiv] = useState<DivFilter>("all");
   // Ticker picked by the user; when it is not on the visible page the first row is charted instead.
   const [picked, setPicked] = useState<string | null>(null);
   const chartRef = useRef<HTMLElement>(null);
@@ -168,7 +177,7 @@ export default function Screener() {
   const [pageSize, setPageSize] = useState<number>(10);
 
   // Back to the first page whenever the visible set changes.
-  useEffect(() => { setPage(1); }, [setup, activeOnly, pageSize]);
+  useEffect(() => { setPage(1); }, [setup, activeOnly, pageSize, div]);
 
   useEffect(() => {
     getScreener().then((d) => {
@@ -200,7 +209,11 @@ export default function Screener() {
   const names = Object.keys(data.setups);
   const cur = data.setups[setup] ?? data.setups[names[0]];
   const meta = SETUPS[setup] ?? { title: setup, rule: "", stopLabel: "stop", detail: {} };
-  const rows = activeOnly ? cur.results.filter((r) => r.status === "active") : cur.results;
+  // Older result files have no detail.divergence: every row there is an RSI divergence.
+  const divOf = (r: ScreenerRow) => String(r.detail.divergence ?? "rsi");
+  const hasDiv = setup === "bullish_divergence";
+  const pool = activeOnly ? cur.results.filter((r) => r.status === "active") : cur.results;
+  const rows = hasDiv && div !== "all" ? pool.filter((r) => divOf(r) === div) : pool;
   const active = cur.results.filter((r) => r.status === "active").length;
   const params = Object.entries(cur.params).map(([k, v]) => `${k}=${String(v)}`).join(" · ");
   const years = Math.round((cur.results[0]?.history.bars ?? 0) / 245);
@@ -250,8 +263,20 @@ export default function Screener() {
             Hanya yang aktif
           </label>
         </header>
+        {hasDiv && (
+          <div className="div-filter" role="radiogroup" aria-label="Filter indikator divergence">
+            {DIV_FILTERS.map(([k, label]) => (
+              <button key={k} type="button" role="radio" aria-checked={div === k} className={div === k ? "active" : ""}
+                onClick={() => setDiv(k)}>
+                {label} <span className="count">{k === "all" ? pool.length : pool.filter((r) => divOf(r) === k).length}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {rows.length === 0 ? (
-          <p className="muted">Tidak ada setup {activeOnly ? "aktif" : ""} saat ini.</p>
+          <p className="muted">
+            Tidak ada setup {activeOnly ? "aktif" : ""}{hasDiv && div !== "all" ? ` dengan divergence ${DIV_LABEL[div]}` : ""} saat ini.
+          </p>
         ) : (
           <div className="scroll">
             <table className="screener">

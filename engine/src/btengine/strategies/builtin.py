@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 from .base import Strategy
@@ -89,31 +91,50 @@ class Donchian(Strategy):
         return pd.Series(out, index=df.index)
 
 
+def _macd(close: pd.Series, fast: int, slow: int, signal: int) -> tuple[pd.Series, pd.Series]:
+    """MACD line (EMA fast - EMA slow) and its signal line (EMA of the line); causal EWMs."""
+    line = close.ewm(span=fast, adjust=False).mean() - close.ewm(span=slow, adjust=False).mean()
+    return line, line.ewm(span=signal, adjust=False).mean()
+
+
 class BullishDivergence(Strategy):
-    """Long when price makes a lower swing low while RSI makes a higher low.
+    """Long when price makes a lower swing low while RSI and/or MACD makes a higher low.
 
     Swing lows are only known in hindsight: bar i is a pivot low if its low is strictly below the
     `pivot_left` bars before it and no higher than the `pivot_right` bars after it. That is first
     knowable at bar i + pivot_right, so the signal fires there -- never at bar i itself (no look-ahead).
 
-    A divergence pairs the new pivot with any earlier pivot j, `min_gap`..`max_gap` bars before it, where
-    low[i] < low[j], RSI[i] > RSI[j], and RSI[j] <= `oversold` (the first low was genuinely oversold).
+    A divergence pairs the new pivot with an earlier pivot j, `min_gap`..`max_gap` bars before it, with
+    low[i] < low[j] and, per oscillator:
+      RSI:  RSI[i] > RSI[j] and RSI[j] <= `oversold` (the first low was genuinely oversold);
+      MACD: MACD[i] > MACD[j] on the MACD line (EMA `macd_fast` - EMA `macd_slow`), and, with
+            `macd_below_zero`, MACD[j] < 0 (the first low came in a real downswing).
+    `indicator` picks what must diverge: "rsi", "macd", "both" (RSI and MACD on the same pair of lows) or
+    "any" (either). The setup's detail says which did: divergence = "rsi" | "macd" | "both" -- "both" when the
+    same pair satisfies both; when several earlier pivots qualify, the oldest one where both agree wins,
+    otherwise the oldest qualifying one.
 
     Exit on the first of: RSI >= `exit_rsi`; `max_hold` bars held; or, with `use_stop`, a close below
     the divergence low (the setup is invalidated). Long-only.
     """
 
     name = "bullish_divergence"
-    price_keys = {"stop": "second_low_bar", "first_low": "first_low_bar", "second_low": "second_low_bar"}
-    price_indicators = False
+    price_keys = {"stop": "second_low_bar", "first_low": "first_low_bar", "second_low": "second_low_bar",
+                  "macd_first": "first_low_bar", "macd_second": "second_low_bar"}
+    oscillators = frozenset({"rsi"})
 
     class Params(BaseModel):
+        indicator: Literal["rsi", "macd", "both", "any"] = "rsi"
         rsi_period: int = Field(14, ge=2, le=200)
         pivot_left: int = Field(5, ge=1, le=50)
         pivot_right: int = Field(3, ge=1, le=50)
         min_gap: int = Field(5, ge=1, le=500)
         max_gap: int = Field(60, ge=2, le=1000)
         oversold: float = Field(40, ge=1, le=100)
+        macd_fast: int = Field(12, ge=2, le=200)
+        macd_slow: int = Field(26, ge=3, le=500)
+        macd_signal: int = Field(9, ge=2, le=200)
+        macd_below_zero: bool = True
         exit_rsi: float = Field(70, ge=1, le=100)
         max_hold: int = Field(20, ge=1, le=1000)
         use_stop: bool = True
@@ -122,13 +143,35 @@ class BullishDivergence(Strategy):
         def _check(self):
             if self.min_gap >= self.max_gap:
                 raise ValueError("min_gap must be < max_gap")
+            if self.macd_fast >= self.macd_slow:
+                raise ValueError("macd_fast must be < macd_slow")
             return self
+
+    def _pick(self, i: int, pivots: list[int], low, rsi, macd) -> tuple[int, str] | None:
+        """(first-low pivot, "rsi" | "macd" | "both") for the new pivot i under `indicator`, or None."""
+        p = self.params
+        need = {"rsi": lambda r, m: r, "macd": lambda r, m: m, "both": lambda r, m: r and m,
+                "any": lambda r, m: r or m}[p.indicator]
+        fallback = None
+        for j in pivots:  # oldest first
+            if not (p.min_gap <= i - j <= p.max_gap and low[i] < low[j]):
+                continue
+            r = rsi[i] > rsi[j] and rsi[j] <= p.oversold
+            m = macd[i] > macd[j] and (not p.macd_below_zero or macd[j] < 0)
+            if not need(r, m):
+                continue
+            if r and m:
+                return j, "both"
+            if fallback is None:
+                fallback = (j, "rsi" if r else "macd")
+        return fallback
 
     def _run(self, df) -> tuple[np.ndarray, list[dict]]:
         """Position per bar plus one record per setup taken (used by the screener to explain a signal)."""
         p = self.params
         low, close = df["low"].to_numpy(), df["close"].to_numpy()
         rsi = _rsi(df["close"], p.rsi_period).to_numpy()
+        macd = _macd(df["close"], p.macd_fast, p.macd_slow, p.macd_signal)[0].to_numpy()
         L, R = p.pivot_left, p.pivot_right
 
         out = np.zeros(len(df))
@@ -147,13 +190,16 @@ class BullishDivergence(Strategy):
 
             i = t - R  # the only pivot candidate that becomes confirmed at bar t
             if i - L >= 0 and low[i] < low[i - L:i].min() and low[i] <= low[i + 1:t + 1].min():
-                ref = next((j for j in pivots if p.min_gap <= i - j <= p.max_gap and low[i] < low[j]
-                            and rsi[i] > rsi[j] and rsi[j] <= p.oversold), None)
-                if ref is not None and pos == 0.0 and not exited:
+                hit = self._pick(i, pivots, low, rsi, macd) if pos == 0.0 and not exited else None
+                if hit is not None:
+                    ref, kind = hit
                     pos, entry_bar, stop = 1.0, t, low[i]
                     setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": float(low[i]),
-                                   "detail": {"first_low_bar": ref, "first_low": float(low[ref]), "rsi_first": float(rsi[ref]),
-                                              "second_low_bar": i, "second_low": float(low[i]), "rsi_second": float(rsi[i])}})
+                                   "detail": {"divergence": kind,
+                                              "first_low_bar": ref, "first_low": float(low[ref]), "rsi_first": float(rsi[ref]),
+                                              "macd_first": float(macd[ref]),
+                                              "second_low_bar": i, "second_low": float(low[i]), "rsi_second": float(rsi[i]),
+                                              "macd_second": float(macd[i])}})
                 pivots.append(i)
                 # Pivots older than max_gap can never pair with a future pivot.
                 pivots = [j for j in pivots if i - j <= p.max_gap]
@@ -169,7 +215,9 @@ class BullishDivergence(Strategy):
         return self._run(df)[1]
 
     def indicators(self, df):
-        return {"rsi": _rsi(df["close"], self.params.rsi_period)}
+        p = self.params
+        line, signal = _macd(df["close"], p.macd_fast, p.macd_slow, p.macd_signal)
+        return {"rsi": _rsi(df["close"], p.rsi_period), "macd": line, "macd_signal": signal, "macd_hist": line - signal}
 
 
 EMA_PERIODS = (10, 20, 50, 100, 200)

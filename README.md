@@ -65,7 +65,7 @@ area, SL and TPs.
 
 | Setup | Rule (long only) |
 | --- | --- |
-| `bullish_divergence` | price makes a lower swing low while RSI makes a higher low; stop = divergence low; exit on RSI >= `exit_rsi` or `max_hold` |
+| `bullish_divergence` | price makes a lower swing low while RSI and/or MACD makes a higher low; the screener runs it with `indicator=any` and tags each row `rsi`, `macd` or `both` (the UI filters on it); stop = divergence low; exit on RSI >= `exit_rsi` or `max_hold` |
 | `consolidated_ma` | EMA 10/20/50/100/200 within `tightness_pct` (3%) of the close for `min_squeeze_bars` (5) bars, then a close above the highest EMA on volume >= `volume_mult` (1.5x) the `volume_window` (20) average; stop = lowest EMA at signal; exit on stop or `max_hold` (60) |
 | `stopping_volume` | in a downtrend (close below the `trend_ema` (50) EMA), a bar makes the lowest low of `lookback` (20) bars on volume >= `volume_mult` (2x) the `volume_window` (20) average but closes in the upper part of its range (>= `close_position`, 0.5); signal after `confirm_bars` (2) bars that hold above its low; stop = stopping-volume low; exit on stop or `max_hold` (30) |
 
@@ -172,7 +172,7 @@ dropped; Yahoo FX bars with a corrupt open get open := previous close. FX volume
 | `sma_cross` | long while fast SMA > slow SMA (optional short) |
 | `rsi_reversion` | long when RSI < oversold, exit at RSI >= exit_level |
 | `donchian_breakout` | long on a close above the N-bar high, exit below the M-bar low |
-| `bullish_divergence` | long when price makes a lower swing low but RSI makes a higher low; exit on RSI >= `exit_rsi`, after `max_hold` bars, or (with `use_stop`) a close below the divergence low |
+| `bullish_divergence` | long when price makes a lower swing low but the oscillator makes a higher low: `indicator` = `rsi` (default; RSI, first low <= `oversold`), `macd` (MACD line `macd_fast`/`macd_slow`, first low below 0 with `macd_below_zero`), `both` (same pair of lows) or `any`; exit on RSI >= `exit_rsi`, after `max_hold` bars, or (with `use_stop`) a close below the divergence low |
 
 `bullish_divergence` only acts on a swing low once it is confirmed, `pivot_right` bars later, so there is no look-ahead;
 `engine/tests/test_engine.py` checks that signals are unchanged when future bars are removed.

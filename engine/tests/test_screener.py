@@ -44,6 +44,9 @@ def test_screener_reports_open_and_recent_setups_only():
 def test_screener_defaults_to_every_setup():
     out = screen({"X": make_df(np.linspace(100, 150, 300))})
     assert set(out["setups"]) == set(SETUPS) == {"bullish_divergence", "consolidated_ma", "stopping_volume"}
+    assert out["setups"]["bullish_divergence"]["params"]["indicator"] == "any"        # screener: RSI and MACD
+    bd = screen({"X": make_df(np.linspace(100, 150, 300))}, {"bullish_divergence": {"indicator": "rsi"}})
+    assert bd["setups"]["bullish_divergence"]["params"]["indicator"] == "rsi"         # explicit params win
 
 
 # ---------- consolidated_ma ----------
@@ -169,6 +172,9 @@ def test_screener_reports_traded_prices_of_dividend_adjusted_data():
     a = screen({"X": div}, {"bullish_divergence": None}, recent_bars=100, min_bars=50)["setups"]["bullish_divergence"]["results"][0]
     b = screen({"X": div_f}, {"bullish_divergence": None}, recent_bars=100, min_bars=50)["setups"]["bullish_divergence"]["results"][0]
     assert b["chart"]["series"]["rsi"] == a["chart"]["series"]["rsi"]
+    assert b["chart"]["series"]["macd"][-1] == pytest.approx(2 * a["chart"]["series"]["macd"][-1], abs=1e-3)  # price units (chart: 4 dp)
+    assert b["detail"]["macd_second"] == pytest.approx(2 * a["detail"]["macd_second"], abs=1e-3)
+    assert a["detail"]["divergence"] == "both"
     assert b["detail"]["second_low"] == pytest.approx(2 * a["detail"]["second_low"]) and b["detail"]["rsi_second"] == a["detail"]["rsi_second"]
 
 
