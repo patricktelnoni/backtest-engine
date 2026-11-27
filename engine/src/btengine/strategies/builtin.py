@@ -141,7 +141,7 @@ class BullishDivergence(Strategy):
         pivot_right: int = Field(3, ge=1, le=50)
         min_gap: int = Field(5, ge=1, le=500)
         max_gap: int = Field(60, ge=2, le=1000)
-        oversold: float = Field(40, ge=1, le=100)
+        oversold: float = Field(30, ge=1, le=100)
         macd_fast: int = Field(12, ge=2, le=200)
         macd_slow: int = Field(26, ge=3, le=500)
         macd_signal: int = Field(9, ge=2, le=200)

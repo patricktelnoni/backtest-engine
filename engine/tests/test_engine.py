@@ -172,7 +172,7 @@ def test_bullish_divergence_scenario_is_a_real_divergence():
     c = _div_closes()
     r = _rsi_of(c)
     a, b = 35 + WARM_BARS, 67 + WARM_BARS
-    assert c[b] < c[a] and r[b] > r[a] and r[a] <= 40  # lower low in price, higher low in RSI
+    assert c[b] < c[a] and r[b] > r[a] and r[a] <= 30  # lower low in price, higher low in RSI, first low oversold
 
 
 @pytest.mark.parametrize("right", [1, 3, 5])
@@ -188,9 +188,12 @@ def test_bullish_divergence_ignores_lower_low_confirmed_by_rsi():
     c = _no_div_closes()
     r = _rsi_of(c)
     a, b = 56 + WARM_BARS, 71 + WARM_BARS
-    # Both lows are valid pivots, far enough apart, and the first is oversold -- only RSI rules it out.
-    assert c[b] < c[a] and r[b] < r[a] and r[a] <= 40
+    # Both lows are valid pivots, far enough apart, and the first is oversold at 40 -- only RSI rules it out.
+    # (At the default oversold=30 the first low, RSI ~34, is not oversold, which rules it out on its own.)
+    assert c[b] < c[a] and r[b] < r[a] and 30 < r[a] <= 40
+    assert get_strategy("bullish_divergence").params.oversold == 30
     assert not get_strategy("bullish_divergence").signals(make_df(c)).any()
+    assert not get_strategy("bullish_divergence", oversold=40).signals(make_df(c)).any()
     # Sanity: lifting the oversold filter changes nothing, and the scenario does produce pivots at 56 and 71.
     assert not get_strategy("bullish_divergence", oversold=100).signals(make_df(c)).any()
 
