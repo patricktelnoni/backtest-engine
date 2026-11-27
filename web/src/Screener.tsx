@@ -45,7 +45,7 @@ type DivFilter = (typeof DIV_FILTERS)[number][0];
 const SETUPS: Record<string, { title: string; rule: string; stopLabel: string; detail: Record<string, [string, (v: number | string) => string]> }> = {
   bullish_divergence: {
     title: "Bullish divergence",
-    rule: "Harga membuat swing low lebih rendah sementara RSI dan/atau MACD membuat low lebih tinggi (RSI: low pertama ≤ oversold; MACD: garis MACD low pertama di bawah 0). Sinyal saat pivot kedua terkonfirmasi; stop = low divergence. Keluar saat RSI ≥ exit_rsi, max hold, atau stop.",
+    rule: "Harga membuat swing low lebih rendah sementara RSI dan/atau MACD membuat low lebih tinggi (RSI: low pertama ≤ oversold; MACD: garis MACD low pertama di bawah 0). Tidak boleh ada low harga yang lebih rendah di antara kedua low, dan low osilator di leg kedua harus di atas low leg pertama; dipasangkan dengan pivot terdekat yang memenuhi syarat. Sinyal saat pivot kedua terkonfirmasi; stop = low divergence. Keluar saat RSI ≥ exit_rsi, max hold, atau stop.",
     stopLabel: "low divergence",
     detail: {
       stop: ["Stop", (v) => price(Number(v))],

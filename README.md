@@ -191,7 +191,7 @@ dropped; Yahoo FX bars with a corrupt open get open := previous close. FX volume
 | `sma_cross` | long while fast SMA > slow SMA (optional short) |
 | `rsi_reversion` | long when RSI < oversold, exit at RSI >= exit_level |
 | `donchian_breakout` | long on a close above the N-bar high, exit below the M-bar low |
-| `bullish_divergence` | long when price makes a lower swing low but the oscillator makes a higher low: `indicator` = `rsi` (default; RSI, first low <= `oversold`), `macd` (MACD line `macd_fast`/`macd_slow`, first low below 0 with `macd_below_zero`), `both` (same pair of lows) or `any`; exit on RSI >= `exit_rsi`, after `max_hold` bars, or (with `use_stop`) a close below the divergence low |
+| `bullish_divergence` | long when price makes a lower swing low but the oscillator makes a higher low: `indicator` = `rsi` (default; RSI, first low <= `oversold`), `macd` (MACD line `macd_fast`/`macd_slow`, first low below 0 with `macd_below_zero`), `both` (same pair of lows) or `any`. The second low must be the lowest low since the first (no lower low in between), the oscillator's low in the second leg must stay above its first-leg low, and the most recent qualifying earlier pivot is used; exit on RSI >= `exit_rsi`, after `max_hold` bars, or (with `use_stop`) a close below the divergence low |
 
 `bullish_divergence` only acts on a swing low once it is confirmed, `pivot_right` bars later, so there is no look-ahead;
 `engine/tests/test_engine.py` checks that signals are unchanged when future bars are removed.

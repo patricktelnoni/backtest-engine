@@ -196,17 +196,27 @@ def _walks(n_seeds=12, bars=600):
         yield make_df(100 * np.exp(np.cumsum(rng.normal(0, 0.02, bars))))
 
 
+def _legs_hold(df, osc, j, i):
+    """Oscillator's low in the second leg (from the highest high between the lows to i) above its first-leg low."""
+    h = j + int(np.argmax(df["high"].to_numpy()[j:i + 1]))
+    return osc[h:i + 1].min() > osc[j:h + 1].min()
+
+
 def test_bullish_divergence_indicator_modes_and_labels():
     # Every setup's label must match what its two lows actually show, and each mode only takes what it asks for.
     allowed = {"rsi": {"rsi", "both"}, "macd": {"macd", "both"}, "both": {"both"}, "any": {"rsi", "macd", "both"}}
     seen = {m: set() for m in allowed}
     for df in _walks():
+        ind = get_strategy("bullish_divergence").indicators(df)
         for mode in allowed:
             strat = get_strategy("bullish_divergence", indicator=mode)
             for s in strat.scan(df):
                 d = s["detail"]
-                rsi_div = d["rsi_second"] > d["rsi_first"] and d["rsi_first"] <= strat.params.oversold
-                macd_div = d["macd_second"] > d["macd_first"] and d["macd_first"] < 0
+                j, i = d["first_low_bar"], d["second_low_bar"]
+                rsi_div = (d["rsi_second"] > d["rsi_first"] and d["rsi_first"] <= strat.params.oversold
+                           and _legs_hold(df, ind["rsi"].to_numpy(), j, i))
+                macd_div = (d["macd_second"] > d["macd_first"] and d["macd_first"] < 0
+                            and _legs_hold(df, ind["macd"].to_numpy(), j, i))
                 assert d["second_low"] < d["first_low"]
                 assert d["divergence"] == ("both" if rsi_div and macd_div else "rsi" if rsi_div else "macd")
                 assert d["divergence"] in allowed[mode]
@@ -239,6 +249,76 @@ def test_bullish_divergence_macd_modes_have_no_lookahead(mode):
     assert full.sum() > 0
     for t in range(len(df)):
         assert strat.signals(df.iloc[: t + 1]).iloc[-1] == full[t], f"look-ahead at bar {t}"
+
+
+def _bounce_closes():
+    """Low A (bar 35, ~80), a crash to an even lower low K (bar ~54, ~72), a rebound, then a pullback to C (~77):
+    C is below A but a higher low than K -- a bounce, not a bullish divergence of C against A."""
+    return np.concatenate([np.linspace(100, 102, 30), np.linspace(101, 80, 6), np.linspace(81, 88, 6),
+                           np.linspace(87, 72, 13), np.linspace(73, 86, 10), np.linspace(85, 77, 10),
+                           np.linspace(78, 90, 12)])
+
+
+def test_bullish_divergence_never_pairs_across_a_lower_low():
+    df = make_df(_bounce_closes())
+    low = df["low"].to_numpy()
+    for mode in ("rsi", "macd", "any"):
+        for s in get_strategy("bullish_divergence", indicator=mode, oversold=100).scan(df):
+            j, i = s["detail"]["first_low_bar"], s["detail"]["second_low_bar"]
+            assert low[j:i].min() >= low[i], f"{mode}: pivot {i} paired with {j} across a lower low"
+    # The same check on random walks, where intermediate lower lows are common.
+    for df in _walks():
+        low = df["low"].to_numpy()
+        for s in get_strategy("bullish_divergence", indicator="any", oversold=100).scan(df):
+            j, i = s["detail"]["first_low_bar"], s["detail"]["second_low_bar"]
+            assert low[j:i].min() >= low[i]
+
+
+def test_bullish_divergence_rejects_oscillator_lower_low_in_second_leg():
+    # Every reported divergence must have the oscillator's second-leg low above its first-leg low.
+    for df in _walks():
+        ind = get_strategy("bullish_divergence").indicators(df)
+        for s in get_strategy("bullish_divergence", indicator="any", oversold=100).scan(df):
+            d = s["detail"]
+            j, i = d["first_low_bar"], d["second_low_bar"]
+            if d["divergence"] in ("rsi", "both"):
+                assert _legs_hold(df, ind["rsi"].to_numpy(), j, i)
+            if d["divergence"] in ("macd", "both"):
+                assert _legs_hold(df, ind["macd"].to_numpy(), j, i)
+
+
+def test_bullish_divergence_pairs_with_most_recent_qualifying_pivot():
+    # Re-run the pairing over every candidate: no more recent pivot than the chosen one may also qualify
+    # (with the same "both" preference: a newer "both" beats the chosen one, a newer single label cannot when
+    # the chosen one is "both").
+    from btengine.strategies.builtin import BullishDivergence
+    checked = 0
+    for df in _walks():
+        strat = get_strategy("bullish_divergence", indicator="any", oversold=100)
+        p = strat.params
+        low, high = df["low"].to_numpy(), df["high"].to_numpy()
+        ind = strat.indicators(df)
+        rsi, macd = ind["rsi"].to_numpy(), ind["macd"].to_numpy()
+        # All confirmed pivots, as the strategy sees them.
+        piv = [k for k in range(p.pivot_left, len(df) - p.pivot_right)
+               if low[k] < low[k - p.pivot_left:k].min() and low[k] <= low[k + 1:k + 1 + p.pivot_right].min()]
+        for s in strat.scan(df):
+            d = s["detail"]
+            j, i = d["first_low_bar"], d["second_low_bar"]
+            newer = [k for k in piv if j < k < i and i - k <= p.max_gap]
+            for k in newer:
+                hit = BullishDivergence._pick(strat, i, [k], low, high, rsi, macd)
+                assert hit is None or (d["divergence"] == "both" and hit[1] != "both"), (i, j, k)
+            checked += 1
+    assert checked > 0
+
+
+def test_rsi_is_100_without_losses_and_50_when_flat():
+    from btengine.strategies.builtin import _rsi
+    up = _rsi(pd.Series(np.linspace(100, 120, 30)), 14).to_numpy()
+    flat = _rsi(pd.Series(np.full(30, 100.0)), 14).to_numpy()
+    assert up[0] == 50 and (up[1:] == 100).all()
+    assert (flat == 50).all()
 
 
 def test_bullish_divergence_stop_exits_when_divergence_low_breaks():
