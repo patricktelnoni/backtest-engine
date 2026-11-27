@@ -120,8 +120,13 @@ class BullishDivergence(Strategy):
     same pair satisfies both; when several earlier pivots qualify, the most recent one where both agree wins,
     otherwise the most recent qualifying one.
 
-    Exit on the first of: RSI >= `exit_rsi`; `max_hold` bars held; or, with `use_stop`, a close below
-    the divergence low (the setup is invalidated). Long-only.
+    Both pivots of a pair must lie at least 3 * max(`rsi_period`, `macd_slow`) bars into the data. RSI's
+    gain/loss EWMs and MACD's EMAs are seeded from the first bars and take that long to converge -- before it
+    a fresh decline reads a fake RSI 0 (the gain EWM is still zero), which would fabricate divergences on
+    short frames. Pivots inside the warm-up are still detected, they just never pair.
+
+    Exit on the first of: with `use_stop`, a close below the divergence low (the setup is invalidated);
+    RSI >= `exit_rsi`; or `max_hold` bars held. Long-only.
     """
 
     name = "bullish_divergence"
@@ -185,6 +190,11 @@ class BullishDivergence(Strategy):
         rsi = _rsi(df["close"], p.rsi_period).to_numpy()
         macd = _macd(df["close"], p.macd_fast, p.macd_slow, p.macd_signal)[0].to_numpy()
         L, R = p.pivot_left, p.pivot_right
+        # Indicator warm-up: RSI's gain/loss EWMs and MACD's EMAs are seeded from the first bars, so their
+        # values take ~3 * max(rsi_period, macd_slow) bars to converge (a fresh decline reads a fake RSI 0,
+        # because the gain EWM is still zero). Pivots inside the warm-up are detected but never recorded for
+        # pairing: their oscillator values are seed artifacts, not real readings.
+        warm = 3 * max(p.rsi_period, p.macd_slow)
 
         out = np.zeros(len(df))
         pivots: list[int] = []
@@ -202,19 +212,20 @@ class BullishDivergence(Strategy):
 
             i = t - R  # the only pivot candidate that becomes confirmed at bar t
             if i - L >= 0 and low[i] < low[i - L:i].min() and low[i] <= low[i + 1:t + 1].min():
-                hit = self._pick(i, pivots, low, high, rsi, macd) if pos == 0.0 and not exited else None
-                if hit is not None:
-                    ref, kind = hit
-                    pos, entry_bar, stop = 1.0, t, low[i]
-                    setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": float(low[i]),
-                                   "detail": {"divergence": kind,
-                                              "first_low_bar": ref, "first_low": float(low[ref]), "rsi_first": float(rsi[ref]),
-                                              "macd_first": float(macd[ref]),
-                                              "second_low_bar": i, "second_low": float(low[i]), "rsi_second": float(rsi[i]),
-                                              "macd_second": float(macd[i])}})
-                pivots.append(i)
-                # Pivots older than max_gap can never pair with a future pivot.
-                pivots = [j for j in pivots if i - j <= p.max_gap]
+                if i >= warm:  # a pivot still inside the warm-up has seed-biased oscillator values: never pair it
+                    hit = self._pick(i, pivots, low, high, rsi, macd) if pos == 0.0 and not exited else None
+                    if hit is not None:
+                        ref, kind = hit
+                        pos, entry_bar, stop = 1.0, t, low[i]
+                        setups.append({"entry_bar": t, "exit_bar": None, "exit_reason": None, "stop": float(low[i]),
+                                       "detail": {"divergence": kind,
+                                                  "first_low_bar": ref, "first_low": float(low[ref]), "rsi_first": float(rsi[ref]),
+                                                  "macd_first": float(macd[ref]),
+                                                  "second_low_bar": i, "second_low": float(low[i]), "rsi_second": float(rsi[i]),
+                                                  "macd_second": float(macd[i])}})
+                    pivots.append(i)
+                    # Pivots older than max_gap can never pair with a future pivot.
+                    pivots = [j for j in pivots if i - j <= p.max_gap]
             out[t] = pos
         return out, setups
 

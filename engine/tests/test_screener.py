@@ -3,7 +3,7 @@ import pytest
 
 from btengine.screener import SETUPS, screen
 from btengine.strategies import get_strategy
-from test_engine import _div_closes, make_df
+from test_engine import WARM_BARS, _div_closes, make_df
 
 
 def test_scan_matches_signals():
@@ -11,17 +11,18 @@ def test_scan_matches_signals():
     strat = get_strategy("bullish_divergence")
     sig = strat.signals(df).to_numpy()
     (setup,) = strat.scan(df)
-    assert setup["entry_bar"] == 70 == int(np.argmax(sig > 0))
-    assert setup["detail"]["second_low_bar"] == 67 and setup["detail"]["first_low_bar"] == 35
-    assert setup["stop"] == pytest.approx(df["low"].iloc[67])
+    entry, first, second = 70 + WARM_BARS, 35 + WARM_BARS, 67 + WARM_BARS
+    assert setup["entry_bar"] == entry == int(np.argmax(sig > 0))
+    assert setup["detail"]["second_low_bar"] == second and setup["detail"]["first_low_bar"] == first
+    assert setup["stop"] == pytest.approx(df["low"].iloc[second])
     exit_bar = setup["exit_bar"]
-    assert sig[70:exit_bar].all() and not sig[exit_bar:].any()
+    assert sig[entry:exit_bar].all() and not sig[exit_bar:].any()
     assert setup["exit_reason"] in {"stop", "rsi", "max_hold"}
 
 
 def test_screener_reports_open_and_recent_setups_only():
-    div = make_df(_div_closes())                                   # setup fires at bar 70, exits later
-    open_setup = make_df(_div_closes()[:72])                       # cut right after entry: still open
+    div = make_df(_div_closes())                                   # setup fires at bar 70 + WARM_BARS, exits later
+    open_setup = make_df(_div_closes()[:72 + WARM_BARS])           # cut right after entry: still open
     flat = make_df(np.linspace(100, 150, 200))                     # no swing lows at all -> no setup
     short = make_df([100, 101, 102])
     out = screen({"OPEN": open_setup, "DIV": div, "FLAT": flat, "SHORT": short},
@@ -32,8 +33,8 @@ def test_screener_reports_open_and_recent_setups_only():
     assert [r["ticker"] for r in bd["results"]] == ["OPEN", "DIV"]   # open first
     o, d = bd["results"]
     assert o["status"] == "active" and o["exit_date"] is None and o["bars_since_signal"] == 1
-    assert d["status"] == "exited" and d["exit_reason"] == "max_hold" and d["signal_date"] == "2022-03-14"
-    assert d["detail"]["second_low_date"] == "2022-03-11" and "second_low_bar" not in d["detail"]
+    assert d["status"] == "exited" and d["exit_reason"] == "max_hold" and d["signal_date"] == "2022-06-12"
+    assert d["detail"]["second_low_date"] == "2022-06-09" and "second_low_bar" not in d["detail"]
     assert o["stop_distance"] == pytest.approx(o["last_close"] / o["stop"] - 1)
     assert d["history"]["n_trades"] == 1 and 0 <= d["history"]["win_rate"] <= 1
     assert bd["params"]["max_hold"] == 5 and out["market"] == "idx_stock"
@@ -203,7 +204,7 @@ def test_trade_plan_rr_2_and_3_on_ticks():
 
 
 def test_rows_carry_plan_and_chart():
-    open_setup = make_df(_div_closes()[:72])
+    open_setup = make_df(_div_closes()[:72 + WARM_BARS])
     out = screen({"OPEN": open_setup}, {"bullish_divergence": {}, "consolidated_ma": {}}, min_bars=50, chart_bars=40)
     (r,) = out["setups"]["bullish_divergence"]["results"]
     assert r["plan"] is not None and r["plan"]["stop_loss"] < r["stop"] < r["plan"]["entry"] < r["plan"]["tp1"] < r["plan"]["tp2"]

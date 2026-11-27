@@ -194,4 +194,6 @@ dropped; Yahoo FX bars with a corrupt open get open := previous close. FX volume
 | `bullish_divergence` | long when price makes a lower swing low but the oscillator makes a higher low: `indicator` = `rsi` (default; RSI, first low <= `oversold`), `macd` (MACD line `macd_fast`/`macd_slow`, first low below 0 with `macd_below_zero`), `both` (same pair of lows) or `any`. The second low must be the lowest low since the first (no lower low in between), the oscillator's low in the second leg must stay above its first-leg low, and the most recent qualifying earlier pivot is used; exit on RSI >= `exit_rsi`, after `max_hold` bars, or (with `use_stop`) a close below the divergence low |
 
 `bullish_divergence` only acts on a swing low once it is confirmed, `pivot_right` bars later, so there is no look-ahead;
-`engine/tests/test_engine.py` checks that signals are unchanged when future bars are removed.
+`engine/tests/test_engine.py` checks that signals are unchanged when future bars are removed. Both lows of a pair
+must also lie at least 3 x max(`rsi_period`, `macd_slow`) bars into the data: before that the RSI/MACD values are
+still biased toward their EWM seed (a fresh decline reads a fake RSI 0), which would fabricate divergences.

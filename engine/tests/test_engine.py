@@ -135,19 +135,32 @@ def test_open_trade_is_marked_and_valued_at_last_close():
 
 # ---------- bullish_divergence ----------
 
-def _div_closes():
-    """Warm-up, sharp drop to low A (bar 35, RSI ~3), rebound, then a slow grind to a lower low B
-    (bar 67, RSI ~17), then a rally: lower low in price, higher low in RSI = bullish divergence."""
+WARM_BARS = 90  # > 3 * max(rsi_period, macd_slow) = 78: past the RSI/MACD warm-up (see BullishDivergence)
+
+
+def _div_pattern():
+    """Sharp drop to low A (pattern bar 35, RSI ~3), rebound, then a slow grind to a lower low B
+    (pattern bar 67, RSI ~17), then a rally: lower low in price, higher low in RSI = bullish divergence."""
     return np.concatenate([np.linspace(100, 102, 30), np.linspace(101, 80, 6), np.linspace(81, 90, 10),
                            np.linspace(89.5, 79, 22), np.linspace(80, 96, 15)])
 
 
-def _no_div_closes():
-    """Choppy decline to low A (bar 56, RSI ~34), bounce, then a straight decline to a lower low B
-    (bar 71, RSI ~29): RSI confirms the lower low, so there is no divergence."""
+def _div_closes():
+    """The classic divergence pattern behind WARM_BARS bars of flat history (no pivots there), so both
+    lows sit past the indicator warm-up and their RSI/MACD readings are converged, not seed artifacts."""
+    return np.concatenate([np.full(WARM_BARS, 100.0), _div_pattern()])
+
+
+def _no_div_pattern():
+    """Choppy decline to low A (pattern bar 56, RSI ~34), bounce, then a straight decline to a lower low B
+    (pattern bar 71, RSI ~29): RSI confirms the lower low, so there is no divergence."""
     chop = 102 + np.cumsum(np.tile([-3.0, 2.2], 13))
     return np.concatenate([np.linspace(100, 102, 30), chop, np.linspace(83, 88, 4), np.linspace(87, 78, 12),
                            np.linspace(79, 90, 12)])
+
+
+def _no_div_closes():
+    return np.concatenate([np.full(WARM_BARS, 100.0), _no_div_pattern()])
 
 
 def _rsi_of(closes, period=14):
@@ -158,7 +171,8 @@ def _rsi_of(closes, period=14):
 def test_bullish_divergence_scenario_is_a_real_divergence():
     c = _div_closes()
     r = _rsi_of(c)
-    assert c[67] < c[35] and r[67] > r[35] and r[35] <= 40  # lower low in price, higher low in RSI
+    a, b = 35 + WARM_BARS, 67 + WARM_BARS
+    assert c[b] < c[a] and r[b] > r[a] and r[a] <= 40  # lower low in price, higher low in RSI
 
 
 @pytest.mark.parametrize("right", [1, 3, 5])
@@ -166,14 +180,16 @@ def test_bullish_divergence_fires_only_after_pivot_is_confirmed(right):
     df = make_df(_div_closes())
     sig = get_strategy("bullish_divergence", pivot_right=right).signals(df).to_numpy()
     first = int(np.argmax(sig > 0))
-    assert sig.any() and first == 67 + right  # the low is at bar 67; it can't be known before 67 + right
+    # the low is at bar 67 + WARM_BARS; it can't be known before 67 + WARM_BARS + right
+    assert sig.any() and first == 67 + WARM_BARS + right
 
 
 def test_bullish_divergence_ignores_lower_low_confirmed_by_rsi():
     c = _no_div_closes()
     r = _rsi_of(c)
+    a, b = 56 + WARM_BARS, 71 + WARM_BARS
     # Both lows are valid pivots, far enough apart, and the first is oversold -- only RSI rules it out.
-    assert c[71] < c[56] and r[71] < r[56] and r[56] <= 40
+    assert c[b] < c[a] and r[b] < r[a] and r[a] <= 40
     assert not get_strategy("bullish_divergence").signals(make_df(c)).any()
     # Sanity: lifting the oversold filter changes nothing, and the scenario does produce pivots at 56 and 71.
     assert not get_strategy("bullish_divergence", oversold=100).signals(make_df(c)).any()
@@ -188,6 +204,20 @@ def test_bullish_divergence_has_no_lookahead():
     assert full.sum() > 0, "test needs at least one signal to be meaningful"
     for t in range(len(df)):
         assert strat.signals(df.iloc[: t + 1]).iloc[-1] == full[t], f"look-ahead at bar {t}"
+
+
+def test_bullish_divergence_warmup_guard_blocks_seed_artifact_divergences():
+    # A fresh decline at the very start of the data: the gain EWM is still zero, so RSI at the first low
+    # reads a fake 0.00 and any later higher reading looks like a divergence. The warm-up guard must block it.
+    fresh = np.concatenate([np.linspace(100, 94, 8), np.linspace(94, 96.5, 4),
+                            np.linspace(96.5, 89, 26), np.linspace(89, 95, 10)])
+    assert not get_strategy("bullish_divergence", indicator="any").signals(make_df(fresh)).any()
+    # The same pattern behind 150 bars of history: the second low confirms the lower low (lower RSI), so
+    # there is no signal either -- but now for the right reason, on converged indicator values.
+    warm = np.concatenate([np.linspace(100, 99, 150), fresh])
+    assert not get_strategy("bullish_divergence", indicator="any").signals(make_df(warm)).any()
+    # The guard must not merely silence everything: a real divergence past the warm-up still fires.
+    assert get_strategy("bullish_divergence").signals(make_df(_div_closes())).any()
 
 
 def _walks(n_seeds=12, bars=600):
@@ -228,8 +258,8 @@ def test_bullish_divergence_rsi_default_is_unchanged_and_macd_classic_case():
     df = make_df(_div_closes())
     assert get_strategy("bullish_divergence").params.indicator == "rsi"     # backtests keep their old results
     (s,) = get_strategy("bullish_divergence").scan(df)
-    assert s["entry_bar"] == 70 and s["detail"]["divergence"] == "both"       # this textbook case diverges on MACD too
-    assert get_strategy("bullish_divergence", indicator="macd").scan(df)[0]["entry_bar"] == 70
+    assert s["entry_bar"] == 70 + WARM_BARS and s["detail"]["divergence"] == "both"  # diverges on MACD too
+    assert get_strategy("bullish_divergence", indicator="macd").scan(df)[0]["entry_bar"] == 70 + WARM_BARS
     assert not get_strategy("bullish_divergence", indicator="any").signals(make_df(_no_div_closes())).any()
     # MACD's below-zero filter: an impossible threshold for RSI leaves only MACD, which then needs macd_first < 0
     for s in get_strategy("bullish_divergence", indicator="any", oversold=1).scan(make_df(_div_closes())):
@@ -252,11 +282,12 @@ def test_bullish_divergence_macd_modes_have_no_lookahead(mode):
 
 
 def _bounce_closes():
-    """Low A (bar 35, ~80), a crash to an even lower low K (bar ~54, ~72), a rebound, then a pullback to C (~77):
-    C is below A but a higher low than K -- a bounce, not a bullish divergence of C against A."""
-    return np.concatenate([np.linspace(100, 102, 30), np.linspace(101, 80, 6), np.linspace(81, 88, 6),
-                           np.linspace(87, 72, 13), np.linspace(73, 86, 10), np.linspace(85, 77, 10),
-                           np.linspace(78, 90, 12)])
+    """Low A (pattern bar 35, ~80), a crash to an even lower low K (pattern bar ~54, ~72), a rebound, then a
+    pullback to C (~77): C is below A but a higher low than K -- a bounce, not a bullish divergence of C
+    against A. Behind WARM_BARS bars of flat history like _div_closes."""
+    return np.concatenate([np.full(WARM_BARS, 100.0), np.linspace(100, 102, 30), np.linspace(101, 80, 6),
+                           np.linspace(81, 88, 6), np.linspace(87, 72, 13), np.linspace(73, 86, 10),
+                           np.linspace(85, 77, 10), np.linspace(78, 90, 12)])
 
 
 def test_bullish_divergence_never_pairs_across_a_lower_low():
@@ -322,20 +353,20 @@ def test_rsi_is_100_without_losses_and_50_when_flat():
 
 
 def test_bullish_divergence_stop_exits_when_divergence_low_breaks():
-    # Entry at bar 70 (pivot at 67 confirmed); stop = low of bar 67 = 79 * 0.99 = 78.21.
-    # Bar 71 closes at 78 < 78.21 -> the setup is invalidated and the position is closed on that bar.
-    c = np.concatenate([_div_closes()[:68], [80, 80.5, 81, 78, 77, 77, 77]])
+    # Entry at bar 70 + WARM_BARS (pivot at 67 + WARM_BARS confirmed); stop = low of that bar = 79 * 0.99 = 78.21.
+    # The next bar closes at 78 < 78.21 -> the setup is invalidated and the position is closed on that bar.
+    c = np.concatenate([_div_closes()[:68 + WARM_BARS], [80, 80.5, 81, 78, 77, 77, 77]])
     df = make_df(c)
     with_stop = get_strategy("bullish_divergence", exit_rsi=100).signals(df).to_numpy()
     no_stop = get_strategy("bullish_divergence", exit_rsi=100, use_stop=False).signals(df).to_numpy()
-    assert with_stop[70] == 1 and with_stop[71:].sum() == 0
-    assert (no_stop[70:] == 1).all()
+    assert with_stop[70 + WARM_BARS] == 1 and with_stop[71 + WARM_BARS:].sum() == 0
+    assert (no_stop[70 + WARM_BARS:] == 1).all()
 
 
 def test_bullish_divergence_max_hold():
     df = make_df(_div_closes())
     sig = get_strategy("bullish_divergence", exit_rsi=100, use_stop=False, max_hold=5).signals(df).to_numpy()
-    assert (sig[70:75] == 1).all() and sig[75] == 0
+    assert (sig[70 + WARM_BARS:75 + WARM_BARS] == 1).all() and sig[75 + WARM_BARS] == 0
 
 
 def test_bullish_divergence_param_validation():
@@ -345,4 +376,4 @@ def test_bullish_divergence_param_validation():
 
 def test_bullish_divergence_runs_through_engine():
     r = run_backtest(make_df(_div_closes()), "bullish_divergence", Market.IDX_STOCK)
-    assert r.metrics["n_trades"] == 1 and r.trades[0]["entry_date"] == make_df(_div_closes()).index[70]
+    assert r.metrics["n_trades"] == 1 and r.trades[0]["entry_date"] == make_df(_div_closes()).index[70 + WARM_BARS]
